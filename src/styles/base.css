@@ -29,6 +29,10 @@ img { display: block; }
 .cap { font: 400 11px/1.6 "Silkscreen", monospace; color: var(--mut); font-style: italic; }
 .big { font: 400 22px/1.35 "Jersey 15", monospace; color: var(--ink); }
 .hero { font: 400 32px/1.2 "Terminal16", "Jersey 15", monospace; color: var(--ink); }
+.home-hero { display: grid; grid-template-columns: clamp(92px, 29vw, 200px) minmax(0, 1fr); gap: 24px; align-items: end; }
+.home-hero-copy { min-width: 0; overflow-wrap: anywhere; }
+.home-hero-art { position: relative; align-self: stretch; overflow: clip; mix-blend-mode: screen; }
+.home-hero-art img { position: absolute; bottom: 0; width: 100%; height: auto; }
 .lnk { cursor: pointer; text-decoration: underline; text-underline-offset: 5px; text-decoration-thickness: 2px; }
 .lnk:hover { color: var(--mut); }
 
@@ -546,6 +550,9 @@ a.tk_link:hover > span:last-child { color: var(--acc); }
 /* ── phones (<= 640px): stack what sits side by side, one card per row. Every
    rule lives in this block so wider viewports render exactly as before. ── */
 @media (max-width: 640px) {
+  .home-hero { grid-template-columns: 1fr; }
+  .home-hero-art { aspect-ratio: 1; background: var(--panel); }
+  .home-hero-art img { height: 100%; object-fit: cover; }
   /* nav: let the buttons wrap onto a second row instead of overflowing */
   .navwrap { padding: 8px 8px 0; }
   .navbar { flex-wrap: wrap; gap: 8px; padding: 6px 8px; }

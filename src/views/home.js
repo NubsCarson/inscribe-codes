@@ -21,9 +21,9 @@ export async function mount(root) {
     <span id="h_wallet"></span>
   </div>
 
-  <div class="grid2" style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr);gap:24px;align-items:end">
-    <div style="position:relative;aspect-ratio:1;background:var(--panel)"><img src="public/img/hero.webp" alt="" style="width:100%;height:100%;object-fit:cover"></div>
-    <div style="display:flex;flex-direction:column;gap:14px">
+  <div class="home-hero">
+    <picture class="home-hero-art"><source media="(max-width: 640px)" srcset="public/img/hero.webp"><img src="public/img/hero-crawl.webp" width="724" height="2172" alt=""></picture>
+    <div class="home-hero-copy" style="display:flex;flex-direction:column;gap:14px">
       <div class="sm" data-tty>inscribe.codes · Solana · Robinhood chain:</div>
       <div class="hero" style="min-height:3.6em"><span id="h_hero"></span><span class="ttycur"></span></div>
       <div class="cap" id="h_stat">*loading chain stats*</div>
