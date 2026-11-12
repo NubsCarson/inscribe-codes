@@ -1,0 +1,23 @@
+{
+  "name": "iq-ordinary-market-browser",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-vm-modules --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@metaplex-foundation/mpl-core": "1.10.0",
+    "@metaplex-foundation/umi": "1.4.1",
+    "@solana/signers": "2.0.0",
+    "@solana/web3.js": "1.99.0",
+    "@tensor-foundation/marketplace": "1.0.0",
+    "bs58": "6.0.0",
+    "buffer": "6.0.3",
+    "tweetnacl": "1.0.3"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12",
+    "jquery": "3.7.1",
+    "jsdom": "26.1.0"
+  }
+}
