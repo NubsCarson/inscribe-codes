@@ -478,14 +478,32 @@ function formHtml() {
         <label><span class="sm">Symbol</span><input id="tk_sym" value="${esc(st.symbol)}" maxlength="${solana ? 13 : 10}" required></label>
       </div>
       <label><span class="sm">Description</span><textarea id="tk_desc" rows="2" ${solana ? "" : 'maxlength="256"'}>${esc(st.desc)}</textarea></label>
-      <label><span class="sm">Trading pair</span><select name="pair" aria-describedby="tk_pair_hint">
-        ${pairs.map(([label, address]) => `<option value="${esc(address)}" ${!other && (options.pair || "") === address ? "selected" : ""}>${esc(label)}</option>`).join("")}
-        <option value="custom" ${other ? "selected" : ""}>Other supported asset…</option>
-      </select></label>
+      <details class="tk-pair-picker">
+        <summary aria-describedby="tk_pair_hint">
+          <span class="sm">Trading pair</span>
+          <span id="tk_selected_pair">${esc(other ? "Custom address" : pairs.find(([, address]) => address === (options.pair || ""))?.[0] || pairs[0][0])}</span>
+          <span class="tk-pair-toggle" aria-hidden="true"></span>
+        </summary>
+        <div class="tk-pair-search">
+          <div class="tk-pair-command">
+            <span aria-hidden="true">&gt;</span>
+            <input type="search" aria-label="Search pairs" placeholder="Token name, ticker or address" autocomplete="off" spellcheck="false">
+            <button type="button" id="tk_pair_clear" aria-label="Clear pair search" hidden>[x]</button>
+          </div>
+          <div class="tk-pair-results" role="group" aria-label="Matching trading pairs">
+            ${pairs.map(([label, address]) => `<button type="button" data-pair="${esc(address)}" aria-pressed="${!other && (options.pair || "") === address}">
+              <span class="tk-pair-name">${esc(label)}</span>${address ? `<code title="${esc(address)}">${esc(shortAddr(address))}</code>` : ""}
+            </button>`).join("")}
+          </div>
+          <p class="sm" id="tk_pair_empty" role="status"></p>
+          <button type="button" class="tk-pair-custom" data-pair="custom" aria-pressed="${other}"><span aria-hidden="true">[+]</span> Enter a custom address</button>
+        </div>
+      </details>
+      <input type="hidden" name="pair" value="${esc(options.pair || "")}">
       <label id="tk_pair_address" ${other ? "" : "hidden"}>Quote asset ${solana ? "mint" : "contract address"}
         <input name="customPair" value="${esc(options.customPair || "")}" spellcheck="false">
       </label>
-      <p id="tk_pair_hint" class="sm">${solana ? "Choose a supported Pump asset or paste an eligible Pump coin mint." : "Choose an asset approved by Pons, or paste its Robinhood Chain contract address."} The pair is fixed at launch.</p>
+      <p id="tk_pair_hint" class="sm">The pair is fixed at launch. ${solana ? "Pump checks mint eligibility." : "Pons checks its allowlist."}</p>
       <div class="tk-form-grid tk-form-buy">
         ${field('<span id="tk_buy_label">Opening buy</span>', "initialBuy", "text", 'inputmode="decimal" placeholder="0"')}
         ${field("X link (optional)", "twitter", "url", 'placeholder="https://x.com/..."')}
@@ -601,7 +619,62 @@ function wireModalEvents(root, modal) {
         fee.closest("label").hidden = fee.disabled;
       }
     };
-    pair.onchange = updatePair;
+    const picker = form.querySelector(".tk-pair-picker");
+    const summary = picker.querySelector("summary");
+    const search = picker.querySelector("input");
+    const clearSearch = picker.querySelector("#tk_pair_clear");
+    const empty = picker.querySelector("#tk_pair_empty");
+    const choices = [...picker.querySelectorAll("button[data-pair]")];
+    const results = choices.filter((button) => button.dataset.pair !== "custom").map((button) => ({
+      button,
+      searchable: (button.querySelector("span").textContent + " " + button.dataset.pair).toLowerCase(),
+    }));
+    const filterPairs = () => {
+      clearSearch.hidden = !search.value;
+      const words = search.value.toLowerCase().trim().split(/\s+/).filter(Boolean);
+      let found = false;
+      for (const { button, searchable } of results) {
+        button.hidden = !words.every((word) => searchable.includes(word));
+        if (!button.hidden) found = true;
+      }
+      empty.textContent = found ? "" : "No matching pairs.";
+    };
+    search.oninput = filterPairs;
+    clearSearch.onclick = () => { search.value = ""; filterPairs(); search.focus(); };
+    picker.addEventListener("toggle", () => {
+      if (!picker.open) return;
+      search.value = "";
+      filterPairs();
+      search.focus();
+    });
+    picker.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        picker.open = false;
+        summary.focus();
+        event.preventDefault();
+      } else if (event.target === search && event.key === "Enter") {
+        event.preventDefault();
+        const matches = results.filter(({ button }) => !button.hidden);
+        if (matches.length === 1) matches[0].button.click();
+      } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        if (event.target !== search && !choices.includes(event.target)) return;
+        const visible = choices.filter((button) => !button.hidden);
+        const current = visible.indexOf(event.target);
+        const next = event.key === "ArrowDown" ? visible[current + 1] : visible[current - 1];
+        (next || (event.key === "ArrowUp" ? search : visible.at(-1))).focus();
+        event.preventDefault();
+      }
+    });
+    for (const button of choices) {
+      button.onclick = () => {
+        pair.value = button.dataset.pair;
+        picker.querySelector("#tk_selected_pair").textContent = pair.value === "custom" ? "Custom address" : button.querySelector("span").textContent;
+        for (const choice of choices) choice.setAttribute("aria-pressed", String(choice === button));
+        picker.open = false;
+        updatePair();
+        (pair.value === "custom" ? custom : summary).focus();
+      };
+    }
     updatePair();
     const mode = form.elements.namedItem("mode");
     if (mode) {
