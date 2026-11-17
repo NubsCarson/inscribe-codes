@@ -14,7 +14,7 @@ import { connect as rpcConnect } from "../../chain/rpc.js";
 import { estimateCost } from "../../chain/burner.js";
 import { nav, paintWalletPill as paintNavWallet } from "../../ui/nav.js";
 
-import { PAIRS, PUMP_FEE_SOL, USDC_MINT } from "../../chain/launch/options.js";
+import { PAIRS, IQ_LAUNCH_FEE_SOL, canSetHolderRewardRate } from "../../chain/launch/options.js";
 
 const hasMarketPrice = (row) => Number.isFinite(Number(row.priceUsd)) && Number(row.priceUsd) > 0;
 
@@ -523,7 +523,7 @@ function formHtml() {
               <textarea name="feeShares" rows="3" spellcheck="false" aria-describedby="tk_share_help">${esc(options.feeShares || "")}</textarea>
               <span id="tk_share_help" class="sm">One wallet and share per line, separated by a space. Shares must total 10,000 bps. The split locks at launch.</span>
             </label>
-            ${field("Custom creator fee (bps)", "creatorFee", "number", 'min="0" step="1" placeholder="Venue default"')}
+            ${field("Holder Rewards rate (bps)", "creatorFee", "number", 'min="0" step="1" placeholder="Venue default"')}
           ` : `
             ${field("Discord link", "discord", "url")}
             ${field("Farcaster link", "farcaster", "url")}
@@ -534,10 +534,10 @@ function formHtml() {
             <label class="tk-check"><input name="buyback" type="checkbox" ${options.buyback ? "checked" : ""}> Enable buybacks</label>
           `}
         </div>
-        <p class="sm">${solana ? "Holder rewards are permanent. Pump currently blocks new agent accounts. Custom fees apply only to eligible pairs; 100 bps = 1%." : "For an opening buy, set your minimum received. A stock-token buy may need a separate approval for the exact amount."}</p>
+        <p class="sm">${solana ? "Holder rewards are permanent. Pump currently blocks new agent accounts. SOL and USDC use Pump’s fee schedule. Eligible custom pairs can set a Holder Rewards rate. 100 bps = 1%." : "For an opening buy, set your minimum received. A stock-token buy may need a separate approval for the exact amount."}</p>
       </details>
       <div class="sm tk-launch-cost">
-        <div class="kv"><span>${solana ? "platform fee" : "Pons launch fee"}</span><span>${solana ? PUMP_FEE_SOL + " SOL" : "quoted before signing"}</span></div>
+        <div class="kv"><span>${solana ? "IQ launcher fee" : "Pons launch fee"}</span><span>${solana ? IQ_LAUNCH_FEE_SOL + " SOL" : "quoted before signing"}</span></div>
         <div class="kv"><span>opening buy</span><span id="tk_buy_cost"></span></div>
       </div>
       <p class="sm">${solana ? "Inscription and network fees are additional. Larger launches may need a separate lookup table approval and account rent." : "Gas and inscription costs are additional."}</p>
@@ -609,15 +609,17 @@ function wireModalEvents(root, modal) {
       buyCost.textContent = /^\d+(?:\.\d+)?$/.test(amount) ? `${amount} ${unit}` : "—";
     };
     buy.addEventListener("input", updateBuyCost);
+    const mode = form.elements.namedItem("mode");
+    const updateRewardRate = () => {
+      const fee = form.elements.namedItem("creatorFee");
+      fee.disabled = !canSetHolderRewardRate(mode.value, pair.value === "custom" ? custom.value.trim() : pair.value);
+      fee.closest("label").hidden = fee.disabled;
+    };
     const updatePair = () => {
       custom.closest("label").hidden = pair.value !== "custom";
       custom.required = pair.value === "custom";
       updateBuyCost();
-      if (st.chain === "solana") {
-        const fee = form.elements.namedItem("creatorFee");
-        fee.disabled = !pair.value || pair.value === USDC_MINT;
-        fee.closest("label").hidden = fee.disabled;
-      }
+      if (mode) updateRewardRate();
     };
     const picker = form.querySelector(".tk-pair-picker");
     const summary = picker.querySelector("summary");
@@ -676,8 +678,8 @@ function wireModalEvents(root, modal) {
       };
     }
     updatePair();
-    const mode = form.elements.namedItem("mode");
     if (mode) {
+      custom.addEventListener("input", updateRewardRate);
       const updateMode = () => {
         for (const section of form.querySelectorAll("[data-launch-mode]")) {
           const selected = section.dataset.launchMode === mode.value;
@@ -687,7 +689,10 @@ function wireModalEvents(root, modal) {
           input.required = selected;
         }
       };
-      mode.onchange = updateMode;
+      mode.onchange = () => {
+        updateMode();
+        updateRewardRate();
+      };
       updateMode();
     } else {
       const minimum = form.elements.namedItem("minTokensOut");

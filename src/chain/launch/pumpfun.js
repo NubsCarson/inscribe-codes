@@ -5,13 +5,13 @@ import { OnlinePumpSdk, PUMP_SDK, creatorVaultPda, feeSharingConfigPda, getBuyV3
 import { PumpAgentOffline } from "@pump-fun/agent-payments-sdk";
 import BN from "bn.js";
 import { createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync } from "@solana/spl-token";
-import { PUMP_FEE_SOL, USDC_MINT } from "./options.js";
+import { IQ_LAUNCH_FEE_SOL, SOL_MINT, USDC_MINT, canSetHolderRewardRate } from "./options.js";
 
 const FEE_WALLET = new PublicKey("5eCDJGbuS1k5ELso8h6fnMVEJpjmrCHoX1sS92Txa9Rh");
 // Shared frozen Pump Family table. It only compresses public account keys
 // already selected by the SDK; the launch never takes instructions from it.
 const LAUNCH_LOOKUP_TABLE = new PublicKey("6rZuW7Kh9C5dGENPChACcyDd6vJ1KdT5XeFVEPvYb2uW");
-const SOL = new PublicKey("So11111111111111111111111111111111111111112");
+const SOL = new PublicKey(SOL_MINT);
 
 export async function preparePump(connection, { pair, initialBuy, mode, creatorFee, feeShares, agentBuyback, creator }) {
   const online = new OnlinePumpSdk(connection);
@@ -25,9 +25,17 @@ export async function preparePump(connection, { pair, initialBuy, mode, creatorF
   if (mode === "mayhem" && (!global.mayhemModeEnabled || (quote && pair !== USDC_MINT))) {
     throw new Error("Mayhem is unavailable for this pair.");
   }
+  if (creatorFee && !/^\d{1,5}$/.test(creatorFee)) {
+    throw new Error("Enter the Holder Rewards rate in whole basis points.");
+  }
   const creatorFeeBps = new BN(creatorFee || "0", 10);
-  if (!creatorFeeBps.isZero() && (!quote || pair === USDC_MINT || !global.creatorFeeConfigurable || creatorFeeBps.gt(global.maxConfigurableCreatorFeeBps))) {
-    throw new Error("That creator fee is unavailable for this pair.");
+  if (!creatorFeeBps.isZero()) {
+    if (!canSetHolderRewardRate(mode, pair) || !global.creatorFeeConfigurable) {
+      throw new Error("A custom Holder Rewards rate is unavailable for this mode or pair.");
+    }
+    if (creatorFeeBps.gt(global.maxConfigurableCreatorFeeBps)) {
+      throw new Error(`Enter a Holder Rewards rate up to ${global.maxConfigurableCreatorFeeBps.toString()} bps.`);
+    }
   }
   let shareholders;
   if (mode === "sharing") {
@@ -171,7 +179,7 @@ export async function launchOnPump({ connection, wallet, name, symbol, uri, term
   }
 
   instructions.unshift(ComputeBudgetProgram.setComputeUnitLimit({ units: 650_000 }));
-  instructions.push(SystemProgram.transfer({ fromPubkey: user, toPubkey: FEE_WALLET, lamports: Math.round(PUMP_FEE_SOL * 1e9) }));
+  instructions.push(SystemProgram.transfer({ fromPubkey: user, toPubkey: FEE_WALLET, lamports: Math.round(IQ_LAUNCH_FEE_SOL * 1e9) }));
   const [recent, lookup] = await Promise.all([
     connection.getLatestBlockhash(),
     (terms.quoteAmount.isZero() && !terms.shareholders && terms.buybackBps === undefined) ? null : connection.getAddressLookupTable(LAUNCH_LOOKUP_TABLE),

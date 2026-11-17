@@ -7,15 +7,15 @@ import { PROGRAM_ID as AGENT_PROGRAM, getOfflineProgram } from "@pump-fun/agent-
 import { Interface, getAddress, ZeroAddress } from "ethers";
 import { preparePump, launchOnPump } from "../src/chain/launch/pumpfun.js";
 import { launchOnPons, FACTORY, LAUNCH_AND_BUY } from "../src/chain/launch/pons.js";
-import { PAIRS } from "../src/chain/launch/options.js";
+import { PAIRS, SOL_MINT, USDC_MINT, canSetHolderRewardRate } from "../src/chain/launch/options.js";
 const user = Keypair.generate().publicKey;
 const stock = PAIRS.solana[2][1];
 
 test("Pump builds SOL and Token-2022 stock instructions and verifies simulation before signing", async () => {
   const tokenProgram = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
-  mock.method(OnlinePumpSdk.prototype, "fetchGlobal", async () => ({ isHolderRewardEnabled: true, mayhemModeEnabled: true }));
+  mock.method(OnlinePumpSdk.prototype, "fetchGlobal", async () => ({ isHolderRewardEnabled: true, mayhemModeEnabled: true, creatorFeeConfigurable: true, maxConfigurableCreatorFeeBps: new BN(300) }));
   mock.method(OnlinePumpSdk.prototype, "resolveQuoteMint", async (mint) => {
-    assert.equal(mint.toBase58(), stock);
+    assert.ok([stock, USDC_MINT].includes(mint.toBase58()));
     return { decimals: 8, quoteTokenProgram: tokenProgram };
   });
   let transaction, table, signatures = 0, reject = false;
@@ -42,6 +42,21 @@ test("Pump builds SOL and Token-2022 stock instructions and verifies simulation 
     await assert.rejects(launchOnPump(opts), /simulation failed/);
     reject = false;
   }
+  assert.equal(canSetHolderRewardRate("holders", stock), true);
+  const holderTerms = await preparePump(connection, { pair: stock, mode: "holders", creatorFee: "100" });
+  assert.equal(holderTerms.creatorFeeBps.toNumber(), 100);
+  for (const mode of ["standard", "sharing", "mayhem"]) {
+    assert.equal(canSetHolderRewardRate(mode, stock), false);
+    if (mode !== "mayhem") {
+      await assert.rejects(preparePump(connection, { pair: stock, mode, creatorFee: "100" }), /unavailable/);
+    }
+  }
+  for (const pair of ["", SOL_MINT, USDC_MINT, PublicKey.default.toBase58()]) {
+    assert.equal(canSetHolderRewardRate("holders", pair), false);
+    await assert.rejects(preparePump(connection, { pair, mode: "holders", creatorFee: "100" }), /unavailable/);
+  }
+  await assert.rejects(preparePump(connection, { pair: stock, mode: "holders", creatorFee: "301" }), /up to 300 bps/);
+  await assert.rejects(preparePump(connection, { pair: stock, mode: "holders", creatorFee: "-1" }), /whole basis points/);
   assert.equal(signatures, 2);
   await assert.rejects(preparePump(connection, { pair: stock, mode: "mayhem" }), /Mayhem is unavailable/);
   await assert.rejects(preparePump(connection, { pair: stock, mode: "standard", initialBuy: "0.000000001" }), /too many decimal/);
