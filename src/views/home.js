@@ -56,7 +56,7 @@ export async function mount(root) {
 
   <div class="grid2" style="display:grid;grid-template-columns:1fr 1fr;gap:24px">
     <div style="display:flex;flex-direction:column;gap:14px">
-      <div class="sm" data-tty>Top 3 collections · MINT VOLUME:</div>
+      <div class="sm" data-tty>Top 3 collections · SOL mint volume</div>
       <div id="h_topnft" style="display:flex;flex-direction:column;border-bottom:2px solid var(--acc)"><span class="sm" style="padding:12px 0">loading...</span></div>
       <a href="?view=nft" class="big">All collections</a>
     </div>
@@ -111,7 +111,8 @@ async function loadCollections(root) {
   const live = collections.filter((c) => c.minted < c.maxSupply && (!c.endAt || c.endAt * 1000 > Date.now()));
   root.querySelector("#h_nftlive").textContent = live.length + " MINTING NOW";
 
-  const top = collections.slice().sort((a, b) => b.priceLamports * b.minted - a.priceLamports * a.minted).slice(0, 3);
+  const top = collections.filter((c) => (!c.chain || c.chain === "solana") && (!c.currency || c.currency.symbol === "SOL"))
+    .sort((a, b) => b.priceLamports * b.minted - a.priceLamports * a.minted).slice(0, 3);
   root.querySelector("#h_topnft").innerHTML = top.map((c, i) => {
     const soldOut = c.minted >= c.maxSupply;
     const status = soldOut ? "Sold out" : "LIVE";

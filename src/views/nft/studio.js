@@ -9,6 +9,7 @@ import { call } from "../../services/nft-backend.js";
 import { connect as rpcConnect, explorerTx } from "../../chain/rpc.js";
 import { fileToBitmap, bitmapToImageData, compositeImageData, compositeDataUrl } from "../../ui/image.js";
 import { session, addr, connectWallet, ensureBurner, paintWalletPill } from "./session.js";
+import { SOL, availableMintCurrencies, formatMintUnits, isStockCurrency, toMintUnits } from "../../chain/nft-currency.js";
 
 const st = {
   step: 0, producer: "generate",
@@ -17,7 +18,7 @@ const st = {
   layers: [], sel: 0, supply: 100, mainPicks: null, generated: null, confirm: false, showMeta: false,
   handItems: [], selItem: 0,
   folderItems: null, folderReport: null,
-  priceSol: "0.01", depositSol: "0", royaltyPct: "5", sequential: false,
+  currency: SOL, currencies: [SOL], priceInput: "0.01", depositSol: "0", royaltyPct: "5", sequential: false,
   deploying: false, pct: 0, phase: "", log: [], error: null, result: null,
 };
 
@@ -62,7 +63,7 @@ function paint(root) {
 
 const nav = (back, next, nextLabel = "Continue", disabled = false) =>
   `<div class="nf-nav">${back ? '<button class="btn2 ns_back">← Back</button>' : ""}${next ? `<button class="btn ns_next" ${disabled ? "disabled" : ""}>${nextLabel}</button>` : ""}</div>`;
-const err = () => (st.error ? `<div class="cm" style="margin-top:10px;color:var(--bad)">${esc(st.error)}</div>` : "");
+const err = () => (st.error ? `<div class="cm" id="ns_error" style="margin-top:10px;color:var(--bad)">${esc(st.error)}</div>` : "");
 
 // ── step 0: what are you launching ──────────────────────────────────────────
 function choiceHtml() {
@@ -306,11 +307,14 @@ function checkHtml() {
 // ── step 4: mint settings ───────────────────────────────────────────────────
 function settingsHtml() {
   const n = (items() || []).length;
+  const stock = isStockCurrency(st.currency);
   return `
     <div class="nf-form2">
-      <div><div class="fl">Price (SOL)</div><input class="inp" id="ns_price" value="${esc(st.priceSol)}"></div>
+      <label><div class="fl">Mint currency</div><select class="inp" id="ns_currency">${st.currencies.map(currency =>
+        `<option value="${esc(currency.mint)}"${currency.mint === st.currency.mint ? " selected" : ""}>${esc(currency.symbol)}${currency.issuer ? " · " + esc(currency.issuer) : ""}</option>`).join("")}</select></label>
+      <label><div class="fl">Price (${esc(st.currency.symbol)})</div><input class="inp" id="ns_price" inputmode="decimal" value="${esc(st.priceInput)}"></label>
       <div><div class="fl">Supply</div><input class="inp" value="${n}" readonly></div>
-      <div><div class="fl">Deposit (SOL, paid at reservation, counts toward the price)</div><input class="inp" id="ns_deposit" value="${esc(st.depositSol)}"></div>
+      ${stock ? "" : `<div><div class="fl">Deposit (SOL, paid at reservation, counts toward the price)</div><input class="inp" id="ns_deposit" value="${esc(st.depositSol)}"></div>`}
       <div><div class="fl">Royalties (%)</div><input class="inp" id="ns_royalty" value="${esc(st.royaltyPct)}"></div>
       <div class="span2"><div class="fl">Payout wallet</div><input class="inp" value="${esc(shortAddr(addr()))} (you)" readonly></div>
     </div>
@@ -319,7 +323,7 @@ function settingsHtml() {
       <div class="nf-opt"><div class="fl">Allowlist phase</div><div class="cm">Mint lists arrive with the manage update. Until then every mint is public.</div></div>
       <div class="nf-opt"><div class="fl">Reveal</div><div class="cm">Instant. Each item is revealed the moment it is minted; delayed reveal is not offered here.</div></div>
     </div>
-    <div class="cm" style="margin-top:10px">Platform fee is 5% of the price, paid by the minter on top. Minters also pay variable inscription, account rent and network costs. Nothing up front from you except the deploy fee.</div>
+    <div class="cm" style="margin-top:10px">Buyers pay a 5% platform fee in the mint currency and on-chain costs in SOL. ${stock ? "Stock-priced mints have no reservation deposit. " : ""}The mint currency is fixed at deployment. You pay the deploy fee up front.</div>
     ${err()}
     ${nav(true, true)}`;
 }
@@ -335,6 +339,7 @@ function deployHtml() {
       <div class="nf-bignum">≈ ${(est / 1e9).toFixed(3)} <small>SOL</small></div>
       <div class="cm" style="margin-top:10px">Estimated for ${n} items. The exact amount is computed from your files right before the signature; anything left comes back.</div>
     </div>
+    <div class="kv"><span>Mint price</span><span>${formatMintUnits(toMintUnits(st.priceInput, st.currency.decimals), st.currency.decimals)} ${esc(st.currency.symbol)}</span></div>
     <details class="nf-details" style="margin-top:14px"><summary>details ▸</summary><div style="border:1px solid var(--line);margin-top:4px">
       <div class="kv"><span>deploy fee (covers the Arweave staging + platform)</span><span>${fmtSol(fee)}</span></div>
       <div class="kv"><span>manifest + collection.json on chain</span><span>~0.01 SOL</span></div>
@@ -394,6 +399,24 @@ function wire(root, modal) {
     if (st.step === 1) {
       if (!st.name.trim() || !st.symbol.trim() || st.slug.length < 3) { st.error = "name, symbol and a 3+ char handle are required"; return paint(root); }
       if (st.slugState === "taken") { st.error = 'the handle "' + st.slug + '" is taken'; return paint(root); }
+    }
+    if (st.step === 3) {
+      go(4);
+      const settings = root.querySelector("#ns_currency");
+      availableMintCurrencies().then((currencies) => {
+        if (st.step !== 4 || !settings?.isConnected) return;
+        st.currencies = currencies;
+        st.currency = currencies.find(c => c.mint === st.currency.mint) || SOL;
+        paint(root);
+      }).catch(() => {});
+      return;
+    }
+    if (st.step === 4) {
+      try {
+        const price = toMintUnits(st.priceInput, st.currency.decimals);
+        if (isStockCurrency(st.currency) && !price) throw new Error("Enter a positive stock-token price. Choose SOL for a free mint.");
+        if (!isStockCurrency(st.currency) && toMintUnits(st.depositSol, SOL.decimals) > price) throw new Error("Deposit cannot exceed the mint price.");
+      } catch (error) { st.error = error.message; return paint(root); }
     }
     go(st.step + 1);
   }; });
@@ -484,8 +507,15 @@ function wire(root, modal) {
   all(".ns_fclear", (el) => { el.onclick = () => { st.folderItems = null; st.folderReport = null; paint(root); }; });
 
   // step 4
-  on("#ns_price", (el) => { el.oninput = () => { st.priceSol = el.value; }; });
-  on("#ns_deposit", (el) => { el.oninput = () => { st.depositSol = el.value; }; });
+  on("#ns_currency", (el) => { el.onchange = () => {
+    st.currency = st.currencies.find(c => c.mint === el.value) || SOL;
+    st.priceInput = "";
+    st.error = null;
+    paint(root);
+  }; });
+  const clearPriceError = () => { st.error = null; modal.querySelector("#ns_error")?.remove(); };
+  on("#ns_price", (el) => { el.oninput = () => { st.priceInput = el.value; clearPriceError(); }; });
+  on("#ns_deposit", (el) => { el.oninput = () => { st.depositSol = el.value; clearPriceError(); }; });
   on("#ns_royalty", (el) => { el.oninput = () => { st.royaltyPct = el.value; }; });
   all(".ns_assign", (el) => { el.onclick = () => { st.sequential = el.dataset.s === "1"; paint(root); }; });
 
@@ -603,12 +633,15 @@ async function runDeploy(root) {
     if (lg) lg.innerHTML = st.log.map((l) => `<div class="${l.ok ? "ok" : ""}">&gt; ${esc(l.text)}</div>`).join("");
   };
   try {
+    if (isStockCurrency(st.currency) && !(await availableMintCurrencies()).some(
+      currency => currency.mint === st.currency.mint && currency.decimals === st.currency.decimals,
+    )) throw new Error("Stock checkout is unavailable for the selected currency.");
     const connection = rpcConnect();
     const burner = await ensureBurner();
     const spec = {
       slug: st.slug, name: st.name.trim(), symbol: st.symbol.trim(), description: st.description.trim(),
-      price: Math.round(parseFloat(st.priceSol || "0") * 1e9) || 0,
-      deposit: Math.round(parseFloat(st.depositSol || "0") * 1e9) || 0,
+      price: toMintUnits(st.priceInput, st.currency.decimals), currency: st.currency.mint,
+      deposit: isStockCurrency(st.currency) ? 0 : toMintUnits(st.depositSol, SOL.decimals),
       royaltyBps: Math.round(parseFloat(st.royaltyPct || "0") * 100) || 0,
       sequential: st.sequential,
       logo: st.logoBitmap ? () => bitmapToImageData(st.logoBitmap) : null,

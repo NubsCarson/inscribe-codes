@@ -16,7 +16,8 @@ import { estimateCost, getAccountRent, topUp, sweep, confirmOrCheck } from "./bu
 import { writeFeedRow } from "./feed.js";
 import { call, collection as getCollection } from "../services/nft-backend.js";
 import { notify, imgUrl } from "../services/gateway.js";
-import { mintPlatformFee } from "./nft-fees.js";
+import { PLATFORM_FEE_BPS } from "./nft-fees.js";
+import { isStockCurrency } from "./nft-currency.js";
 
 // One popup funds the whole mint, so the budget is generous and the remainder
 // sweeps back: price (including any deposit) + platform fee + register-time
@@ -26,12 +27,13 @@ const IMAGE_CAP_BYTES = 256 * 1024;
 const META_CAP_BYTES = 4096;
 
 export function mintBudget(col, accountRent) {
-  const price = Number(col.priceLamports || 0);
-  const fee = mintPlatformFee(price);
+  const stock = isStockCurrency(col.currency);
+  const price = stock ? 0 : Number(col.priceLamports || 0);
+  const fee = Math.ceil((price * PLATFORM_FEE_BPS) / 10000);
   const imageRowBytes = Math.ceil((IMAGE_CAP_BYTES * 4) / 3) + 128; // base64 + row wrapper
   const img = estimateCost(imageRowBytes, accountRent === undefined ? {} : { accountRent }).total;
   const meta = estimateCost(META_CAP_BYTES, { accountRent: 0 }).total; // accounts exist after C
-  return price + fee + ASSET_OVERHEAD + img + meta;
+  return price + fee + (stock ? 0 : ASSET_OVERHEAD) + img + meta;
 }
 
 // ── Resume checkpoints ──────────────────────────────────────────────────────
@@ -114,25 +116,32 @@ async function reportLanded(slug, reservationId) {
 }
 
 // ── mint ────────────────────────────────────────────────────────────────────
-// onStage(stage, extra): funding, deposit, reserve, image, metadata, register,
+// onStage(stage, extra): funding, deposit, reserve, image, metadata, register, stock-payment,
 // confirming, done. onProgress drives the chunk bar for C.
 export async function mint({ connection, wallet, burner, slug, collection, onStage, onProgress }) {
   const who = wallet.publicKey.toBase58();
   const burnerPk = burner.publicKey.toBase58();
   const stage = (s, x) => { try { onStage && onStage(s, x); } catch (e) {} };
   const col = collection || (await getCollection(slug));
+  const payment = isStockCurrency(col.currency) ? await import("./nft-payment.js") : null;
 
   // A saved mint is only resumable for the same wallet+burner (the reservation
   // and the co-sign are bound to them). Otherwise start clean.
   let p = loadProgress(slug);
   if (p && (p.wallet !== who || p.burner !== burnerPk)) p = null;
   p = p || { wallet: who, burner: burnerPk };
+  if (payment && !p.reservationId) await payment.checkStockPayment(connection, wallet.publicKey, col);
   const touch = () => (p.reservationId ? call("/c/" + slug + "/reserve/touch", { reservationId: p.reservationId }).catch(() => {}) : Promise.resolve());
 
   // 1. Fund once for the whole mint.
   if (!p.funded) {
     const accountRent = await getAccountRent(connection, burner.publicKey);
-    await topUp(connection, wallet, burner.publicKey, mintBudget(col, accountRent), (lamports) => stage("funding", { lamports }));
+    const budget = mintBudget(col, accountRent);
+    if (payment) {
+      const [buyerSol, burnerSol] = await Promise.all([connection.getBalance(wallet.publicKey), connection.getBalance(burner.publicKey)]);
+      if (buyerSol < Math.max(0, budget - burnerSol) + ASSET_OVERHEAD) throw new Error("Keep enough SOL in your wallet for inscription and NFT account costs.");
+    }
+    await topUp(connection, wallet, burner.publicKey, budget, (lamports) => stage("funding", { lamports }));
     p.funded = true; saveProgress(slug, p);
   }
 
@@ -189,17 +198,32 @@ export async function mint({ connection, wallet, burner, slug, collection, onSta
 
   let mintSig = null;
   if (!co.confirmed) {
-    stage("confirming");
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try { mintSig = await sendRegister(connection, co, burner, asset); break; }
-      catch (e) {
-        if (attempt >= 2) throw e;
-        // Blockhash likely aged out; ask for a fresh co-signed tx (replay path,
-        // same reservation + asset) and resend. An expired tx cannot have landed.
-        await touch();
-        const fresh = await mintCall(slug, { reservationId: p.reservationId });
-        if (fresh.confirmed) { mintSig = "(already landed)"; break; }
-        co = fresh;
+    if (payment) {
+      const latest = await getCollection(slug);
+      if (latest.priceLamports !== col.priceLamports || latest.currency?.mint !== col.currency.mint ||
+          latest.currency?.decimals !== col.currency.decimals) {
+        throw new Error("The mint price changed. Reopen the collection to review the new price.");
+      }
+      const tx = Transaction.from(base64ToBytes(co.transaction));
+      payment.validateStockRegister(tx, { buyer: wallet.publicKey, asset: asset.publicKey, collection: col, index: p.index });
+      tx.partialSign(asset);
+      stage("stock-payment");
+      const signed = await wallet.signTransaction(tx);
+      stage("confirming");
+      mintSig = await connection.sendRawTransaction(signed.serialize());
+      if (!(await confirmOrCheck(connection, mintSig, tx.recentBlockhash, co.lastValidBlockHeight))) throw new Error("Stock mint confirmation is pending. Resume to check its status.");
+    } else {
+      stage("confirming");
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try { mintSig = await sendRegister(connection, co, burner, asset); break; }
+        catch (e) {
+          if (attempt >= 2) throw e;
+          // Blockhash likely aged out; replay for the same reservation and asset.
+          await touch();
+          const fresh = await mintCall(slug, { reservationId: p.reservationId });
+          if (fresh.confirmed) { mintSig = "(already landed)"; break; }
+          co = fresh;
+        }
       }
     }
   }
