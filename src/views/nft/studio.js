@@ -30,6 +30,12 @@ export function open(root) {
 const STEPS = ["1 · DETAILS", "2 · ITEMS", "3 · CHECK", "4 · MINT", "5 · DEPLOY", "6 · PROGRESS"];
 const TITLES = ["Launch a collection", "Details", "Items", "Check files", "Mint settings", "Deploy", "deploying…", "Live"];
 const MODE_LABEL = { generate: "generated", handcraft: "hand-crafted", folder: "uploaded" };
+const STOCK_NAMES = new Map([
+  ["NVDAx", "NVIDIA"],
+  ["NVDA", "NVIDIA"],
+  ["BLK", "BlackRock"],
+  ["SPY", "SPDR S&P 500 ETF"],
+]);
 const DEPLOY_FEE = (n) => 10_000_000 + n * 300_000; // backend quotes the exact value at stage
 
 function items() {
@@ -308,10 +314,14 @@ function checkHtml() {
 function settingsHtml() {
   const n = (items() || []).length;
   const stock = isStockCurrency(st.currency);
+  const currencies = st.currencies.map(currency => {
+    const name = STOCK_NAMES.get(currency.symbol);
+    const label = name ? `${currency.symbol} · ${name}` : currency.symbol;
+    return `<option value="${esc(currency.mint)}"${currency.mint === st.currency.mint ? " selected" : ""}>${esc(label)}</option>`;
+  }).join("");
   return `
     <div class="nf-form2">
-      <label><div class="fl">Mint currency</div><select class="inp" id="ns_currency">${st.currencies.map(currency =>
-        `<option value="${esc(currency.mint)}"${currency.mint === st.currency.mint ? " selected" : ""}>${esc(currency.symbol)}${currency.issuer ? " · " + esc(currency.issuer) : ""}</option>`).join("")}</select></label>
+      <label><div class="fl">Mint currency</div><select class="inp" id="ns_currency">${currencies}</select></label>
       <label><div class="fl">Price (${esc(st.currency.symbol)})</div><input class="inp" id="ns_price" inputmode="decimal" value="${esc(st.priceInput)}"></label>
       <div><div class="fl">Supply</div><input class="inp" value="${n}" readonly></div>
       ${stock ? "" : `<div><div class="fl">Deposit (SOL, paid at reservation, counts toward the price)</div><input class="inp" id="ns_deposit" value="${esc(st.depositSol)}"></div>`}
