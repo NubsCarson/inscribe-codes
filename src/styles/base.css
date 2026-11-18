@@ -652,6 +652,7 @@ a.tk_link:hover > span:last-child { color: var(--acc); }
 .tk-fee-row { grid-template-columns: minmax(96px, 1fr) minmax(0, 2fr) minmax(76px, 0.65fr) auto; align-items: end; }
 .tk-fee-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; margin-top: 10px; }
 .tk-fee-editor .btn2:disabled { opacity: 0.45; cursor: default; }
+.tk-fee-editor [hidden] { display: none; }
 .tk-launch-form .tk-check { grid-template-columns: auto 1fr; align-items: center; font-size: 16px; }
 .tk-launch-form p { margin: 0; }
 .tk-launch-advanced p { margin-top: 8px; }

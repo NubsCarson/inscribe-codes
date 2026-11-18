@@ -537,7 +537,7 @@ function formHtml() {
               <legend class="sm">Creator fee recipients</legend>
               <div class="tk-fee-rows">${(options.feeShares || [{ percent: "100" }]).map(feeRecipientRow).join("")}</div>
               <div class="tk-fee-actions"><button class="btn2" type="button" data-add-recipient>Add recipient</button><output class="sm"></output></div>
-              <p id="tk_share_help" class="sm">Shares must total 100% and lock at launch. GitHub recipients claim in Pump.fun. Any public member can claim for an organization.</p>
+              <p id="tk_share_help" class="sm">Shares must total 100% and lock at launch. GitHub recipients claim in Pump.fun.</p>
             </fieldset>
             ${field("Holder Rewards rate (bps)", "creatorFee", "number", 'min="0" step="1" placeholder="Venue default"')}
           ` : `
