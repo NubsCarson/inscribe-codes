@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test, mock } from "node:test";
 import BN from "bn.js";
 import { AddressLookupTableAccount, Keypair, PublicKey } from "@solana/web3.js";
-import { OnlinePumpSdk, PUMP_SDK, feeSharingConfigPda } from "@pump-fun/pump-sdk";
+import { OnlinePumpSdk, PUMP_SDK, Platform, feeSharingConfigPda, socialFeePda } from "@pump-fun/pump-sdk";
 import { PROGRAM_ID as AGENT_PROGRAM, getOfflineProgram } from "@pump-fun/agent-payments-sdk";
 import { Interface, getAddress, ZeroAddress } from "ethers";
 import { preparePump, launchOnPump } from "../src/chain/launch/pumpfun.js";
@@ -123,6 +123,36 @@ test("Pump builds SOL and Token-2022 stock instructions and verifies simulation 
     }
   }
   mock.restoreAll();
+});
+
+test("Pump resolves GitHub recipients to fee accounts and preserves exact percentage splits", async (t) => {
+  t.mock.method(OnlinePumpSdk.prototype, "fetchGlobal", async () => ({}));
+  t.mock.method(globalThis, "fetch", async (url) => {
+    assert.equal(url, "https://api.github.com/users/octocat");
+    return new Response(JSON.stringify({ login: "octocat", id: 583231, type: "User" }));
+  });
+  const address = socialFeePda("583231", Platform.GitHub);
+  const connection = {
+    async getMultipleAccountsInfo(addresses) {
+      assert.deepEqual(addresses, [address]);
+      return [null];
+    },
+  };
+  const feeShares = [
+    { type: "wallet", recipient: user.toBase58(), percent: "60.25" },
+    { type: "github", recipient: "https://github.com/octocat", percent: "39.75" },
+  ];
+  const options = { mode: "sharing", creator: user, feeShares };
+  const terms = await preparePump(connection, options);
+  assert.deepEqual(terms.shareholders, [{ address: user, shareBps: 6025 }, { address, shareBps: 3975 }]);
+  assert.equal(terms.socialSetup.length, 1);
+  assert.ok(terms.socialSetup[0].keys.some(key => key.pubkey.equals(address)));
+  await assert.rejects(preparePump(connection, { ...options, feeShares: [
+    { type: "wallet", recipient: address.toBase58(), percent: "60.25" }, feeShares[1],
+  ] }), /only once/);
+  await assert.rejects(preparePump(connection, { ...options, feeShares: [
+    feeShares[0], { ...feeShares[1], percent: "39.751" },
+  ] }), /totaling 100%/);
 });
 
 const abi = new Interface([
