@@ -1,7 +1,7 @@
 // Build the selected launch locally with Pump's SDK. No transaction-builder
 // service supplies instructions for the connected wallet to sign.
 import { AddressLookupTableAccount, AddressLookupTableProgram, ComputeBudgetProgram, Keypair, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
-import { OnlinePumpSdk, PUMP_SDK, creatorVaultPda, feeSharingConfigPda, getBuyV3TokenAmountFromQuoteAmount, newBondingCurve } from "@pump-fun/pump-sdk";
+import { OnlinePumpSdk, PUMP_SDK, PUMP_FEE_PROGRAM_ID, Platform, creatorVaultPda, feeSharingConfigPda, getBuyV3TokenAmountFromQuoteAmount, newBondingCurve, socialFeePda } from "@pump-fun/pump-sdk";
 import { PumpAgentOffline } from "@pump-fun/agent-payments-sdk";
 import BN from "bn.js";
 import { createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync } from "@solana/spl-token";
@@ -12,6 +12,63 @@ const FEE_WALLET = new PublicKey("5eCDJGbuS1k5ELso8h6fnMVEJpjmrCHoX1sS92Txa9Rh")
 // already selected by the SDK; the launch never takes instructions from it.
 const LAUNCH_LOOKUP_TABLE = new PublicKey("6rZuW7Kh9C5dGENPChACcyDd6vJ1KdT5XeFVEPvYb2uW");
 const SOL = new PublicKey(SOL_MINT);
+
+async function githubRecipient(value) {
+  const login = value.match(/^(?:https:\/\/github\.com\/|@)?([a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?)\/?$/i)?.[1];
+  if (!login) throw new Error("Use a GitHub account name or profile URL.");
+  const response = await fetch("https://api.github.com/users/" + login, { redirect: "error" });
+  if (response.status === 404) throw new Error("GitHub account @" + login + " was not found.");
+  if (!response.ok) throw new Error("GitHub could not verify @" + login + ". Try again.");
+  const account = await response.json();
+  if (account.login?.toLowerCase() !== login.toLowerCase() ||
+      !["User", "Organization"].includes(account.type) ||
+      !Number.isSafeInteger(account.id) || account.id <= 0) {
+    throw new Error("Could not verify GitHub account @" + login + ".");
+  }
+  const userId = String(account.id);
+  return { address: socialFeePda(userId, Platform.GitHub), userId };
+}
+
+async function prepareFeeShares(connection, creator, shares) {
+  const rows = typeof shares === "string" ? shares.trim().split(/\r?\n/).filter(row => row.trim()).map(row => {
+    const [recipient, bps, ...extra] = row.trim().split(/\s+/);
+    if (!/^\d{1,5}$/.test(bps || "") || extra.length) throw new Error("Use one wallet and whole basis-point share per line.");
+    return { type: "wallet", recipient, percent: String(Number(bps) / 100) };
+  }) : shares || [];
+  const sharesBps = rows.map(({ percent }) => {
+    const match = percent?.match(/^(\d{1,3})(?:\.(\d{1,2}))?$/);
+    return match ? Number(match[1]) * 100 + Number((match[2] || "").padEnd(2, "0")) : 0;
+  });
+  if (!rows.length || rows.length > 10 || sharesBps.some(bps => bps <= 0) ||
+      sharesBps.reduce((total, bps) => total + bps, 0) !== 10_000) {
+    throw new Error("Use 1–10 positive shares totaling 100% (10,000 basis points).");
+  }
+  const recipients = await Promise.all(rows.map(async ({ type, recipient }, index) => {
+    if (type !== "wallet" && type !== "github") throw new Error("Choose Wallet or GitHub for each recipient.");
+    const info = type === "github" ? await githubRecipient(recipient.trim()) : { address: new PublicKey(recipient.trim()) };
+    if (info.address.equals(PublicKey.default)) throw new Error("Enter a valid recipient address.");
+    return { ...info, shareBps: sharesBps[index] };
+  }));
+  if (new Set(recipients.map(({ address }) => address.toBase58())).size !== recipients.length) {
+    throw new Error("Use each fee recipient only once.");
+  }
+  const github = recipients.filter(recipient => recipient.userId);
+  const socialSetup = [];
+  if (github.length) {
+    const accounts = await connection.getMultipleAccountsInfo(github.map(({ address }) => address));
+    for (const [index, { userId }] of github.entries()) {
+      const account = accounts[index];
+      if (!account) {
+        socialSetup.push(await PUMP_SDK.createSocialFeePda({ payer: creator, userId, platform: Platform.GitHub }));
+      } else {
+        if (!account.owner.equals(PUMP_FEE_PROGRAM_ID)) throw new Error("Unexpected GitHub fee account owner.");
+        const state = PUMP_SDK.decodeSocialFeePda(account);
+        if (state.userId !== userId || state.platform !== Platform.GitHub) throw new Error("Unexpected GitHub fee account identity.");
+      }
+    }
+  }
+  return { shareholders: recipients.map(({ address, shareBps }) => ({ address, shareBps })), socialSetup };
+}
 
 export async function preparePump(connection, { pair, initialBuy, mode, creatorFee, feeShares, agentBuyback, creator }) {
   const online = new OnlinePumpSdk(connection);
@@ -37,23 +94,7 @@ export async function preparePump(connection, { pair, initialBuy, mode, creatorF
       throw new Error(`Enter a Holder Rewards rate up to ${global.maxConfigurableCreatorFeeBps.toString()} bps.`);
     }
   }
-  let shareholders;
-  if (mode === "sharing") {
-    const rows = (feeShares || "").trim().split(/\r?\n/).filter((row) => row.trim());
-    shareholders = rows.map((row) => {
-      const [address, bps, ...extra] = row.trim().split(/\s+/);
-      if (!/^\d{1,5}$/.test(bps || "") || extra.length) throw new Error("Enter one wallet address and whole basis-point share per line.");
-      const key = new PublicKey(address);
-      const shareBps = Number(bps);
-      if (key.equals(PublicKey.default) || shareBps <= 0) throw new Error("Enter a valid wallet and a positive share.");
-      return { address: key, shareBps };
-    });
-    if (!shareholders.length || shareholders.length > 10 ||
-        shareholders.reduce((total, share) => total + share.shareBps, 0) !== 10_000 ||
-        new Set(shareholders.map(({ address }) => address.toBase58())).size !== shareholders.length) {
-      throw new Error("Use 1–10 distinct wallets with shares totaling 10,000 basis points.");
-    }
-  }
+  const feeSharing = mode === "sharing" ? await prepareFeeShares(connection, creator, feeShares) : {};
   let buybackBps;
   if (mode === "agent") {
     if (!/^\d{1,5}$/.test(agentBuyback || "") || Number(agentBuyback) > 10_000) {
@@ -82,7 +123,7 @@ export async function preparePump(connection, { pair, initialBuy, mode, creatorF
   return {
     bondingCurve, creatorFeeBps, quoteAmount, quoteMint, quoteTokenProgram: quote?.quoteTokenProgram,
     pumpQuote: quote?.pumpQuote?.accounts, holderReward: mode === "holders", mayhemMode: mode === "mayhem",
-    amount, shareholders, buybackBps,
+    amount, ...feeSharing, buybackBps,
   };
 }
 
@@ -153,6 +194,7 @@ export async function launchOnPump({ connection, wallet, name, symbol, uri, term
   const instructions = [await PUMP_SDK.createV2Instruction(params)];
 
   if (terms.shareholders) {
+    instructions.push(...(terms.socialSetup || []));
     instructions.push(await PUMP_SDK.createFeeSharingConfig({ creator: user, mint: mint.publicKey, pool: null }));
     if (!terms.quoteMint.equals(SOL)) {
       const vault = creatorVaultPda(feeSharingConfigPda(mint.publicKey));

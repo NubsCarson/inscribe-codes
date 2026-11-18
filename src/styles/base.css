@@ -646,15 +646,76 @@ a.tk_link:hover > span:last-child { color: var(--acc); }
 .tk-launch-advanced { border: 1px solid var(--line); padding: 6px 10px; }
 .tk-launch-advanced summary { cursor: pointer; }
 .tk-launch-form :is(input, textarea, select, summary):focus-visible { outline: 1px solid var(--acc); outline-offset: 2px; }
-.tk-launch-advanced .tk-form-grid { margin-top: 8px; }
+.tk-launch-advanced .tk-form-grid { margin-top: 8px; align-items: start; }
+.tk-fee-editor { grid-column: 1 / -1; min-width: 0; margin: 0; padding: 8px 10px 10px; border: 1px solid var(--line); }
+.tk-fee-rows, .tk-fee-row { display: grid; gap: 8px; }
+.tk-fee-row { grid-template-columns: minmax(96px, 1fr) minmax(0, 2fr) minmax(76px, 0.65fr) auto; align-items: end; }
+.tk-fee-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; margin-top: 10px; }
+.tk-fee-editor .btn2:disabled { opacity: 0.45; cursor: default; }
+.tk-fee-editor [hidden] { display: none; }
 .tk-launch-form .tk-check { grid-template-columns: auto 1fr; align-items: center; font-size: 16px; }
 .tk-launch-form p { margin: 0; }
 .tk-launch-advanced p { margin-top: 8px; }
 .tk-launch-cost { border: 1px solid var(--line); }
 .tk-launch-cost .kv { padding: 6px 12px; }
+.tk-launch-cost .kv > :first-child { flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.tk-launch-cost .kv > :last-child { flex: none; white-space: nowrap; }
 .tk-launch-cost .kv > span:last-child { color: var(--acc); }
 .tk-form-back { display: block; margin: 10px auto 0; background: none; color: inherit; border: 0; }
 @media (max-width: 460px) {
   .tk-form-grid { grid-template-columns: minmax(0, 1fr); }
   .tk-form-identity { grid-template-columns: minmax(0, 1fr) minmax(76px, 26%); }
+  .tk-launch-cost .kv { justify-content: space-between; }
+  .tk-launch-cost .kv::after { display: none; }
+  .tk-fee-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .tk-fee-row label:nth-child(-n+2) { grid-column: 1 / -1; }
 }
+
+/* Pair selection uses the same field styling as the launch form. */
+.tk-pair-picker { min-width: 0; border: 1px solid var(--line); background: var(--panel2); font-size: 16px; }
+.tk-pair-picker summary { display: flex; align-items: baseline; gap: 8px; cursor: pointer; list-style: none; padding: 6px 10px; }
+.tk-pair-picker summary::-webkit-details-marker { display: none; }
+.tk-pair-picker summary > span:first-child { color: var(--mut); }
+.tk-pair-picker summary #tk_selected_pair {
+  min-width: 0; margin-left: auto; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--acc);
+}
+.tk-pair-toggle { flex-shrink: 0; color: var(--acc); }
+.tk-pair-toggle::before { content: "[+]"; }
+.tk-pair-picker[open] .tk-pair-toggle::before { content: "[-]"; }
+.tk-pair-search { padding: 0 8px 8px; }
+.tk-pair-command {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center;
+  gap: 6px; padding-inline: 8px; border-bottom: 1px solid var(--line); color: var(--acc);
+}
+.tk-launch-form .tk-pair-command input {
+  border: 0; background: transparent; padding: 10px 0; appearance: none;
+}
+.tk-pair-command:focus-within { background: var(--panel2); }
+.tk-launch-form .tk-pair-command input:focus-visible { outline: 0; }
+.tk-pair-command input::-webkit-search-cancel-button { appearance: none; }
+.tk-pair-command #tk_pair_clear {
+  display: block; width: auto; min-height: 32px; padding: 4px 6px;
+  border: 0; color: var(--acc);
+}
+.tk-pair-command #tk_pair_clear[hidden] { display: none; }
+.tk-pair-command input::placeholder { color: var(--mut); }
+.tk-pair-results { max-height: 207px; overflow-y: auto; overscroll-behavior: contain; }
+.tk-pair-search button {
+  display: grid; grid-template-columns: 1ch minmax(0, 1fr) auto; align-items: baseline;
+  gap: 8px; width: 100%; min-height: 38px; padding: 6px 8px;
+  border-bottom: 1px dotted var(--line); color: var(--ink2); text-align: left;
+}
+.tk-pair-results button::before { content: ""; }
+.tk-pair-results button[aria-pressed="true"]::before,
+.tk-pair-results button:focus-visible::before { content: ">"; color: var(--acc); }
+.tk-pair-search button[hidden] { display: none; }
+.tk-pair-search button[aria-pressed="true"], .tk-pair-search button:hover { color: var(--acc); }
+.tk-pair-search button[aria-pressed="true"], .tk-pair-search button:focus-visible { background: var(--panel2); }
+.tk-pair-search button:focus-visible { outline: 1px solid var(--acc); outline-offset: -1px; }
+.tk-pair-search code { color: var(--mut); font: 400 13px/1.4 "Terminal16", monospace; }
+.tk-pair-name { overflow-wrap: anywhere; }
+.tk-pair-search .tk-pair-custom {
+  display: flex; align-items: center; margin-top: 6px; border: 1px solid var(--line); color: var(--acc);
+}
+#tk_pair_empty { padding: 10px 8px; }
+#tk_pair_empty:empty { display: none; }
