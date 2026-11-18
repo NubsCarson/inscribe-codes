@@ -10,7 +10,7 @@ import { skeleton } from "../../ui/skeleton.js";
 import { paintProgress } from "../../ui/tty.js";
 import { connect as rpcConnect, explorerTx } from "../../chain/rpc.js";
 import { collectionCurrency, formatMintUnits, isStockCurrency } from "../../chain/nft-currency.js";
-import { frame, statusOf, chainOf, segsHtml } from "./launchpad.js";
+import { frame, statusOf, chainOf, coverOf, segsHtml } from "./launchpad.js";
 import { session, addr, connectWallet, ensureBurner, paintWalletPill } from "./session.js";
 import { mint, pendingMint } from "../../chain/nft.js";
 import { mintPlatformFee, PLATFORM_FEE_BPS } from "../../chain/nft-fees.js";
@@ -32,7 +32,7 @@ export async function render(root, slug) {
   const currency = collectionCurrency(col);
   const mintUnit = esc(currency.symbol);
   const formatMintAmount = (raw) => formatMintUnits(raw, currency.decimals);
-  const mintPrice = Number(col.priceLamports || 0);
+  const mintPrice = BigInt(col.priceLamports || 0);
   const priceLabel = mintPrice ? formatMintAmount(mintPrice) : "FREE";
   const platformFee = mintPlatformFee(mintPrice);
   const logo = col.logo || (col.coverSig ? imgUrl(col.coverSig) : "");
@@ -74,6 +74,7 @@ export async function render(root, slug) {
             <div class="kv"><dt>Subtotal</dt><dd>${formatMintAmount(mintPrice + platformFee)} ${mintUnit}</dd></div>
           </dl>` : ""}
         <div class="cm" style="margin-top:10px">${ch.unit !== "SOL" ? "Network costs are additional." : isStockCurrency(col.currency) ? "Inscription, account rent, and network costs are paid in SOL." : "One approval funds your burner wallet for the mint, including a buffer for inscription, account rent and network fees. Unused SOL is sent back after minting."}</div>
+        ${isStockCurrency(col.currency) ? '<div class="cm">Your wallet may apply the issuer’s display adjustment to the token amount.</div>' : ""}
       </div>
       <div>
         <div class="cc-segs" style="height:14px;margin:0" id="nc_segs">${segsHtml(col.minted, col.maxSupply)}</div>
@@ -189,7 +190,7 @@ function paintMint(root) {
   if (st.mint === "approve") {
     el.innerHTML = st.stockApproval
       ? '<div class="ttyspin nf-approve">Approve in your wallet…</div><div class="cm">Review the stock-token payment that completes the mint.</div>'
-      : `<div class="ttyspin nf-approve">Approve ${formatSol(st.fundingLamports)} SOL in your wallet</div>
+      : `<div class="ttyspin nf-approve">Approve ${formatMintUnits(st.fundingLamports, 9)} SOL in your wallet</div>
       <div class="cm">This amount goes to your burner wallet to cover the mint. Any unused SOL comes back after minting. Your wallet may show a separate network fee for this transfer.</div>`;
     return;
   }
@@ -205,7 +206,7 @@ function paintMint(root) {
     el.innerHTML = `
       <div style="text-align:center;padding:6px 0 2px"><div data-tty class="nf-minted">Minted.</div><div class="cm" style="margin-top:10px">${esc(r.name || col.name + " #" + r.index)} · owner ${esc(shortAddr(addr()))}</div></div>
       <div>
-        ${r.refundLamports > 0 ? `<div class="kv"><span>unused SOL returned</span><span>${formatSol(r.refundLamports)} SOL</span></div>`
+        ${r.refundLamports > 0 ? `<div class="kv"><span>unused SOL returned</span><span>${formatMintUnits(r.refundLamports, 9)} SOL</span></div>`
           : r.refundLamports === null ? '<div class="cm">Refund could not be confirmed. Any remaining SOL can be reused for your next mint.</div>' : ""}
         <div class="kv"><span>image on chain</span><span class="mint">${esc(shortAddr(r.C))}</span></div>
         <div class="kv"><span>details on chain</span><span class="mint">${esc(shortAddr(r.M))}</span></div>
@@ -230,7 +231,7 @@ function paintMint(root) {
       : cannot ? `<div class="btn2 nf-cannot">${cannot}</div>`
       : `<button class="btn nf-mintbtn" id="nc_mintbtn">${resume || st.error ? "Resume mint" : "Mint one"}</button>`}
     ${resume && !st.error ? '<div class="cm" style="color:#8dffa0">An unfinished mint was found; only the missing steps are redone.</div>' : ""}
-    <div class="cm"><div>${stock ? "Stock tokens pay for the NFT. SOL covers the on-chain costs." : "One signature. You pay, you own it."}</div><div>The NFT points at its image and details stored on chain.</div></div>`;
+    <div class="cm"><div>${stock ? "First approve the SOL funding, then approve the stock payment." : "One signature. You pay, you own it."}</div><div>The NFT points at its image and details stored on chain.</div></div>`;
   const c = el.querySelector("#nc_connect");
   if (c) c.onclick = () => connectWallet().then(() => { paintWalletPill(root.querySelector("#nav_wallet"), () => paintMint(root)); paintMint(root); }).catch((e) => alert(e.message));
   const b = el.querySelector("#nc_mintbtn");

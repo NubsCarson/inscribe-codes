@@ -16,7 +16,7 @@ import { estimateCost, getAccountRent, topUp, sweep, confirmOrCheck } from "./bu
 import { writeFeedRow } from "./feed.js";
 import { call, collection as getCollection } from "../services/nft-backend.js";
 import { notify, imgUrl } from "../services/gateway.js";
-import { PLATFORM_FEE_BPS } from "./nft-fees.js";
+import { mintPlatformFee } from "./nft-fees.js";
 import { isStockCurrency } from "./nft-currency.js";
 
 // One popup funds the whole mint, so the budget is generous and the remainder
@@ -29,7 +29,7 @@ const META_CAP_BYTES = 4096;
 export function mintBudget(col, accountRent) {
   const stock = isStockCurrency(col.currency);
   const price = stock ? 0 : Number(col.priceLamports || 0);
-  const fee = Math.ceil((price * PLATFORM_FEE_BPS) / 10000);
+  const fee = Number(mintPlatformFee(price));
   const imageRowBytes = Math.ceil((IMAGE_CAP_BYTES * 4) / 3) + 128; // base64 + row wrapper
   const img = estimateCost(imageRowBytes, accountRent === undefined ? {} : { accountRent }).total;
   const meta = estimateCost(META_CAP_BYTES, { accountRent: 0 }).total; // accounts exist after C

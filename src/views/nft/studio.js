@@ -315,8 +315,7 @@ function settingsHtml() {
   const n = (items() || []).length;
   const stock = isStockCurrency(st.currency);
   const currencies = st.currencies.map(currency => {
-    const name = STOCK_NAMES.get(currency.symbol);
-    const label = name ? `${currency.symbol} · ${name}` : currency.symbol;
+    const label = [currency.symbol, currency.issuer, STOCK_NAMES.get(currency.symbol)].filter(Boolean).join(" · ");
     return `<option value="${esc(currency.mint)}"${currency.mint === st.currency.mint ? " selected" : ""}>${esc(label)}</option>`;
   }).join("");
   return `
@@ -333,7 +332,7 @@ function settingsHtml() {
       <div class="nf-opt"><div class="fl">Allowlist phase</div><div class="cm">Mint lists arrive with the manage update. Until then every mint is public.</div></div>
       <div class="nf-opt"><div class="fl">Reveal</div><div class="cm">Instant. Each item is revealed the moment it is minted; delayed reveal is not offered here.</div></div>
     </div>
-    <div class="cm" style="margin-top:10px">Buyers pay a 5% platform fee in the mint currency and on-chain costs in SOL. ${stock ? "Stock-priced mints have no reservation deposit. " : ""}The mint currency is fixed at deployment. You pay the deploy fee up front.</div>
+    <div class="cm" style="margin-top:10px">Buyers pay a 5% platform fee in the mint currency and on-chain costs in SOL. ${stock ? "Stock-priced mints have no reservation deposit. Prices use the token amount before issuer display adjustments. " : ""}The mint currency is fixed at deployment. You pay the deploy fee up front.</div>
     ${err()}
     ${nav(true, true)}`;
 }

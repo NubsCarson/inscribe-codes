@@ -1,5 +1,5 @@
 import { PublicKey, SystemProgram } from "@solana/web3.js";
-import { PLATFORM_FEE_BPS } from "./nft-fees.js";
+import { mintPlatformFee } from "./nft-fees.js";
 import { availableMintCurrencies, formatMintUnits } from "./nft-currency.js";
 
 const REGISTRY = new PublicKey("FCGhsCf5sMM7Z5APta1hi76WGTvrfMJnBr4QSR3w13Fu");
@@ -18,7 +18,7 @@ export async function checkStockPayment(connection, buyer, collection) {
   if (!supported || supported.decimals !== currency.decimals) throw new Error("Stock checkout is unavailable for this currency.");
   const account = paymentAccount(buyer, new PublicKey(currency.mint));
   const price = BigInt(priceLamports);
-  const due = price + price * BigInt(PLATFORM_FEE_BPS) / 10_000n;
+  const due = price + mintPlatformFee(price);
   const info = await connection.getAccountInfo(account, "confirmed");
   if (info && !info.owner.equals(TOKEN_2022)) throw new Error("The buyer's stock token account has the wrong program.");
   const token = info && (await connection.getTokenAccountBalance(account, "confirmed")).value;
