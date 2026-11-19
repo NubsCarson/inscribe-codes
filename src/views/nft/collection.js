@@ -9,7 +9,7 @@ import { nftMarkets } from "../../services/markets.js";
 import { skeleton } from "../../ui/skeleton.js";
 import { paintProgress } from "../../ui/tty.js";
 import { connect as rpcConnect, explorerTx } from "../../chain/rpc.js";
-import { collectionCurrency, formatMintUnits, isStockCurrency } from "../../chain/nft-currency.js";
+import { collectionCurrency, formatMintUnits, isStockCurrency, mintPaymentOptions, isLoopback } from "../../chain/nft-currency.js";
 import { frame, statusOf, chainOf, coverOf, segsHtml } from "./launchpad.js";
 import { session, addr, connectWallet, ensureBurner, paintWalletPill } from "./session.js";
 import { mint, pendingMint } from "../../chain/nft.js";
@@ -17,15 +17,16 @@ import { mintPlatformFee, PLATFORM_FEE_BPS } from "../../chain/nft-fees.js";
 
 const PAGE = 500;
 const TIER_LABEL = { legendary: "Legendary", epic: "EPIC", rare: "RARE" };
-const st = { col: null, items: [], total: 0, hasRarity: false, filter: "all", mint: "idle", pct: 0, log: [], result: null, error: null, busy: false };
+const st = { col: null, items: [], total: 0, hasRarity: false, filter: "all", mint: "idle", pct: 0, log: [], result: null, error: null, busy: false, payWithSol: false };
 
 export async function render(root, slug) {
   const body = frame(root, `<div class="win nf-win nf-colwin"><div class="wh"><span>Collection · ${esc(slug)}</span><a class="wh-right wh-x" href="?view=nft">← all collections</a></div><div class="nf-note">loading...</div></div>`);
-  paintWalletPill(root.querySelector("#nav_wallet"), () => paintMint(root));
+  paintWalletPill(root.querySelector("#nav_wallet"), () => { paintMint(root); refreshSolAvailability(root); });
   let col;
   try { col = await nft.collection(slug); }
   catch (e) { body.querySelector(".nf-note").textContent = 'could not load "' + slug + '": ' + e.message; return; }
-  Object.assign(st, { col, items: [], total: 0, hasRarity: false, filter: "all", mint: "idle", pct: 0, log: [], result: null, error: null, busy: false });
+  if (!body.isConnected) return;
+  Object.assign(st, { col, items: [], total: 0, hasRarity: false, filter: "all", mint: "idle", pct: 0, log: [], result: null, error: null, busy: false, payWithSol: false, quoteWallet: null });
 
   const ch = chainOf(col);
   const status = statusOf(col);
@@ -126,6 +127,7 @@ export async function render(root, slug) {
     paintGrid(root);
   };
   paintMint(root);
+  refreshSolAvailability(root);
   loadItems(root);
 }
 
@@ -176,6 +178,40 @@ function cellHtml(it) {
 
 // ── mint panel ──────────────────────────────────────────────────────────────
 
+async function requestSolQuote(collection, wallet) {
+  const query = new URLSearchParams({ wallet });
+  const { status, json } = await nft.call("/c/" + encodeURIComponent(collection.slug) + "/pay-with-sol/quote?" + query);
+  if (status !== 200 || !Object.hasOwn(json ?? {}, "payWithSol")) {
+    throw new Error(json?.error || "Could not get an exact stock swap quote. Try again.");
+  }
+  if (json.payWithSol !== null) {
+    const { verifySolQuote } = await import("../../chain/nft-sol-payment.js");
+    verifySolQuote(json.payWithSol, collection);
+  }
+  return json.payWithSol;
+}
+
+async function refreshSolAvailability(root) {
+  const collection = st.col, wallet = addr(), panel = root.querySelector("#nc_mint");
+  if (!panel?.isConnected || !collection || st.mint !== "idle") return;
+  if (st.quoteWallet === wallet) return;
+  st.quoteWallet = wallet;
+  st.payWithSol = false;
+  if (!wallet || !isStockCurrency(collection.currency) || !isLoopback(location.hostname) ||
+      statusOf(collection) !== "LIVE") return;
+  try {
+    const options = await mintPaymentOptions();
+    if (!options.payWithSolMints.includes(collection.currency.mint)) return;
+    const quote = await requestSolQuote(collection, wallet);
+    if (panel.isConnected && st.col === collection && addr() === wallet && st.mint === "idle") {
+      st.payWithSol = quote !== null;
+      paintMint(root);
+    }
+  } catch {
+    // Keep direct stock payment available if this wallet cannot get a route.
+  }
+}
+
 function paintMint(root) {
   const el = root.querySelector("#nc_mint");
   if (!el || !st.col) return;
@@ -183,15 +219,23 @@ function paintMint(root) {
   const stock = isStockCurrency(col.currency);
   const you = root.querySelector("#nc_you");
   if (you) you.textContent = addr() ? "connected · " + shortAddr(addr()) : "not connected";
+  if (st.mint === "quote") {
+    el.innerHTML = '<div class="ttyspin nf-approve" role="status">Checking the exact stock shortfall…</div>';
+    return;
+  }
   if (st.mint === "prepare") {
     el.innerHTML = '<div class="ttyspin nf-approve">Preparing mint…</div>';
     return;
   }
   if (st.mint === "approve") {
-    el.innerHTML = st.stockApproval
-      ? '<div class="ttyspin nf-approve">Approve in your wallet…</div><div class="cm">Review the stock-token payment that completes the mint.</div>'
-      : `<div class="ttyspin nf-approve">Approve ${formatMintUnits(st.fundingLamports, 9)} SOL in your wallet</div>
-      <div class="cm">This amount goes to your burner wallet to cover the mint. Any unused SOL comes back after minting. Your wallet may show a separate network fee for this transfer.</div>`;
+    if (st.stockApproval) {
+      const detail = st.swapApproval ? "Approve the reviewed swap and mint together in your wallet." : "Review the stock-token payment that completes the mint.";
+      el.innerHTML = `<div class="ttyspin nf-approve">Approve in your wallet…</div><div class="cm">${detail}</div>`;
+    } else {
+      const purpose = stock ? "cover inscription costs" : "cover the mint";
+      el.innerHTML = `<div class="ttyspin nf-approve">Approve ${formatMintUnits(st.fundingLamports, 9)} SOL in your wallet</div>
+        <div class="cm">This amount goes to your burner wallet to ${purpose}. Any unused SOL comes back after minting. Your wallet may show a separate network fee for this transfer.</div>`;
+    }
     return;
   }
   if (st.mint === "confirm") {
@@ -218,7 +262,11 @@ function paintMint(root) {
         <a class="btn2" href="${esc(explorerTx(r.C))}" target="_blank" rel="noopener">Solscan</a>
         <button class="btn2" id="nc_again">Mint another</button>
       </div>`;
-    el.querySelector("#nc_again").onclick = () => { st.mint = "idle"; st.result = null; paintMint(root); };
+    el.querySelector("#nc_again").onclick = () => {
+      st.mint = "idle"; st.result = null; st.payWithSol = false; st.quoteWallet = null;
+      paintMint(root);
+      refreshSolAvailability(root);
+    };
     return;
   }
   // idle (or paused with an error)
@@ -229,13 +277,59 @@ function paintMint(root) {
     ${st.error ? `<div class="cm" style="color:var(--bad)">${esc(st.error)}</div>` : ""}
     ${!addr() ? '<div class="nf-connectmint" id="nc_connect">Connect wallet to mint</div>'
       : cannot ? `<div class="btn2 nf-cannot">${cannot}</div>`
-      : `<button class="btn nf-mintbtn" id="nc_mintbtn">${resume || st.error ? "Resume mint" : "Mint one"}</button>`}
+      : `<div class="nf-mint-actions">
+        <button class="btn nf-mintbtn" id="nc_mintbtn">${resume ? "Resume mint" : "Mint one"}</button>
+        ${st.payWithSol && !resume?.reservationId ? '<button class="btn2" id="nc_solmint">Pay with SOL</button>' : ""}
+      </div>`}
     ${resume && !st.error ? '<div class="cm" style="color:#8dffa0">An unfinished mint was found; only the missing steps are redone.</div>' : ""}
-    <div class="cm"><div>${stock ? "First approve the SOL funding, then approve the stock payment." : "One signature. You pay, you own it."}</div><div>The NFT points at its image and details stored on chain.</div></div>`;
+    <div class="cm"><div>${stock ? (st.payWithSol
+      ? `Use your ${esc(col.currency.symbol)} balance first. Pay with SOL buys any shortfall at checkout.`
+      : `Have ${esc(col.currency.symbol)} in your wallet before minting. Approve SOL for on-chain costs first, then the stock payment.`) : "One signature. You pay, you own it."}</div><div>The NFT points at its image and details stored on chain.</div></div>`;
   const c = el.querySelector("#nc_connect");
-  if (c) c.onclick = () => connectWallet().then(() => { paintWalletPill(root.querySelector("#nav_wallet"), () => paintMint(root)); paintMint(root); }).catch((e) => alert(e.message));
+  if (c) c.onclick = () => connectWallet().then(() => { paintWalletPill(root.querySelector("#nav_wallet"), () => { paintMint(root); refreshSolAvailability(root); }); paintMint(root); refreshSolAvailability(root); }).catch((e) => alert(e.message));
   const b = el.querySelector("#nc_mintbtn");
-  if (b) b.onclick = () => runMint(root);
+  if (b) b.onclick = () => runMint(root, Boolean(resume?.payWithSol));
+  const sol = el.querySelector("#nc_solmint");
+  if (sol) sol.onclick = () => runMint(root, true);
+}
+
+async function reviewSolQuote(host, quote, currency) {
+  if (!host?.isConnected) return Promise.resolve(false);
+  const { swapVenue } = await import("../../chain/nft-sol-payment.js");
+  const venue = swapVenue(quote.routerProgram);
+  const preliminary = quote.feeLamports == null;
+  const dialog = document.createElement("dialog");
+  dialog.className = "nf-sol-review win";
+  dialog.setAttribute("aria-labelledby", "nf_sol_review_title");
+  const stock = units => formatMintUnits(units, currency.decimals) + " " + esc(currency.symbol);
+  const sol = units => formatMintUnits(units, 9) + " SOL";
+  dialog.innerHTML = `
+    <div class="wh" id="nf_sol_review_title"><span>${preliminary ? "Review " + (venue ? venue + " " : "") + "quote" : "Review SOL payment"}</span></div>
+    <form method="dialog" class="nf-sol-review-body">
+      <div class="kv"><span>Stock due, including platform fee</span><b>${stock(quote.stockDueUnits)}</b></div>
+      <div class="kv"><span>Stock to buy</span><b>${stock(quote.shortfallUnits)}</b></div>
+      <div class="kv"><span>Max SOL for swap</span><b>${sol(quote.inputLimitLamports)}</b></div>
+      ${preliminary ? "" : `<div class="kv"><span>Network fee</span><b>${sol(quote.feeLamports)}</b></div>`}
+      ${quote.estimatedTotalLamports == null ? "" : `<div class="kv"><span>Estimated SOL for swap + mint</span><b>${sol(quote.estimatedTotalLamports)}</b></div>`}
+      <p class="cm">${preliminary ? "You’ll approve inscription funding separately and see a fresh swap quote before minting." : "The swap and mint settle together through " + (venue || "the quoted venue") + ". The estimate includes network fees and account rent. Inscription funding is separate."}</p>
+      ${quote.intermediateUnits ? '<p class="cm">Unused USDC from the route stays in your wallet.</p>' : ""}
+      <div class="nf-mint-actions">
+        <button class="btn2" value="cancel" autofocus>Cancel</button>
+        <button class="btn" value="approve">${preliminary ? "Continue to mint" : "Continue to wallet"}</button>
+      </div>
+    </form>`;
+  host.append(dialog);
+  return new Promise(resolve => {
+    const observer = new MutationObserver(() => { if (!dialog.isConnected) finish(false); });
+    const finish = approved => {
+      observer.disconnect();
+      dialog.remove();
+      resolve(approved);
+    };
+    dialog.addEventListener("close", () => finish(dialog.returnValue === "approve"), { once: true });
+    observer.observe(document.body, { childList: true, subtree: true });
+    dialog.showModal();
+  });
 }
 
 const STAGE_PCT = { funding: 5, deposit: 15, reserve: 20, image: 25, metadata: 80, register: 90, confirming: 95 };
@@ -248,10 +342,11 @@ const STAGE_LINE = {
   confirming: () => "waiting for confirmation",
 };
 
-async function runMint(root) {
+async function runMint(root, payWithSol = false) {
   if (st.busy) return;
-  st.busy = true; st.error = null; st.log = []; st.pct = 0; st.stockApproval = false;
-  st.mint = "prepare"; paintMint(root);
+  const collection = st.col, wallet = session.wallet, modalHost = root.querySelector("#nf_modal");
+  st.busy = true; st.error = null; st.log = []; st.pct = 0; st.stockApproval = false; st.swapApproval = false;
+  st.mint = payWithSol ? "quote" : "prepare"; paintMint(root);
   const live = () => {
     const b = root.querySelector("#nc_bar"), ph = root.querySelector("#nc_phase"), lg = root.querySelector("#nc_log");
     if (b) paintProgress(b, st.pct);
@@ -260,17 +355,44 @@ async function runMint(root) {
   };
   try {
     const connection = rpcConnect();
+    if (payWithSol) {
+      const { assertLocalSolPayment } = await import("../../chain/nft-sol-payment.js");
+      assertLocalSolPayment(connection);
+      const buyer = wallet.publicKey;
+      const pending = pendingMint(collection.slug);
+      if (pending?.wallet !== buyer.toBase58() || !pending.reservationId) {
+        const quote = await requestSolQuote(collection, buyer.toBase58());
+        if (quote !== null) {
+          if (!await reviewSolQuote(modalHost, quote, collection.currency)) {
+            if (modalHost.isConnected) {
+              st.mint = "idle";
+              paintMint(root);
+            }
+            return;
+          }
+        }
+      }
+      if (!modalHost.isConnected || session.wallet !== wallet || !wallet.publicKey.equals(buyer)) {
+        throw new Error("The wallet or collection changed. Reopen checkout.");
+      }
+      st.mint = "prepare";
+      paintMint(root);
+    }
     const burner = await ensureBurner();
-    st.result = await mint({
-      connection, wallet: session.wallet, burner, slug: st.col.slug, collection: st.col,
+    const result = await mint({
+      connection, wallet, burner, slug: collection.slug, collection, payWithSol,
+      reviewSolPayment: quote => reviewSolQuote(modalHost, quote, collection.currency),
       onStage: (s, x) => {
-        if (s === "funding" || s === "stock-payment") { st.stockApproval = s === "stock-payment"; st.fundingLamports = x?.lamports; st.mint = "approve"; paintMint(root); return; }
+        if (!modalHost.isConnected) return;
+        if (s === "funding" || s === "stock-payment") { st.stockApproval = s === "stock-payment"; st.swapApproval = Boolean(x?.swap); st.fundingLamports = x?.lamports; st.mint = "approve"; paintMint(root); return; }
         if (st.mint !== "confirm") { st.mint = "confirm"; paintMint(root); }
         if (STAGE_PCT[s]) st.pct = Math.max(st.pct, STAGE_PCT[s]);
         if (STAGE_LINE[s]) { st.log.push(STAGE_LINE[s](x)); live(); }
       },
       onProgress: (p) => { st.pct = Math.max(st.pct, 25 + Math.round(p * 0.55)); live(); },
     });
+    if (!modalHost.isConnected) return;
+    st.result = result;
     st.mint = "done";
     paintMint(root);
     // the grid cell lights up and the counts move
@@ -282,9 +404,12 @@ async function runMint(root) {
       st.items = []; loadItems(root);
     }).catch(() => {});
   } catch (e) {
-    st.error = String((e && e.message) || e) + " · Resume picks up where it stopped.";
+    if (!modalHost.isConnected) return;
+    st.error = String((e && e.message) || e);
+    if (payWithSol) st.payWithSol = false;
     st.mint = "idle";
     paintMint(root);
+  } finally {
+    if (modalHost.isConnected) st.busy = false;
   }
-  st.busy = false;
 }

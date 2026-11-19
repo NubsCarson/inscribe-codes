@@ -389,7 +389,7 @@ a.tk_link:hover > span:last-child { color: var(--acc); }
 .icell-foot span:first-child { opacity: 0.7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .icell-st { opacity: 0.4; white-space: nowrap; }
 .icell.minted .icell-st { opacity: 1; color: var(--fc); }
-.nf-colright { padding: 22px 24px; display: flex; flex-direction: column; gap: 14px; }
+.nf-colright { min-width: 0; padding: 22px 24px; display: flex; flex-direction: column; gap: 14px; }
 .nf-pricebox { text-align: center; padding: 10px 0 4px; }
 .nf-price { position: relative; display: inline-flex; align-items: baseline; gap: 8px; padding: 12px 24px; }
 .nf-price .c, .nf-vframe .c { position: absolute; width: 12px; height: 12px; border: 0 solid currentColor; }
@@ -645,4 +645,15 @@ a.tk_link:hover > span:last-child { color: var(--acc); }
   .ah-items, .ah-gengrid, .ah-samples { grid-template-columns: repeat(3, 1fr); }
   .ah-main { width: 100%; max-width: 260px; }
   .nf-singlegrid { grid-template-columns: 1fr; }
+}
+
+
+.nf-mint-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.nf-mint-actions .nf-mintbtn { flex: 1 1 120px; }
+.nf-sol-review { width: min(31rem, calc(100vw - 24px)); max-height: calc(100dvh - 24px); box-sizing: border-box; padding: 0; color: var(--ink); font: 400 16px/1.6 "Jersey 15", monospace; }
+.nf-sol-review::backdrop { background: #000d; }
+.nf-sol-review-body { padding: 16px; }
+@media (max-width: 480px) {
+  .nf-sol-review .kv { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding-inline: 0; }
+  .nf-sol-review .kv::after { display: none; }
 }
