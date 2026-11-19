@@ -14,6 +14,7 @@ import * as nft from "../../services/nft-backend.js";
 import { imgUrl } from "../../services/gateway.js";
 import { nftMarketOf } from "../../services/markets.js";
 import { addr, paintWalletPill } from "./session.js";
+import { collectionCurrency, formatMintUnits, isStockCurrency } from "../../chain/nft-currency.js";
 
 export async function mount(root) {
   const q = new URLSearchParams(location.search);
@@ -54,7 +55,10 @@ export function statusOf(c) {
   if (c.startAt && c.startAt > now) return "Upcoming";
   return "LIVE";
 }
-export const priceOf = (c) => (c.priceLamports ? fmtSol(c.priceLamports) : "FREE");
+export const priceOf = (c) => {
+  const currency = collectionCurrency(c);
+  return c.priceLamports ? `${formatMintUnits(c.priceLamports, currency.decimals)} ${esc(currency.symbol)}` : "FREE";
+};
 export const coverOf = (c) => c.banner || c.logo || (c.coverSig ? imgUrl(c.coverSig) : "");
 export const segsHtml = (minted, supply) => {
   const on = supply ? Math.round((SEGS * minted) / supply) : 0;
@@ -145,7 +149,11 @@ function cardHtml(c) {
   const live = status === "LIVE";
   const ch = chainOf(c);
   const hot = live && c.lastMintAt && Date.now() / 1000 - c.lastMintAt < 86400;
-  const vol = c.minted && c.priceLamports ? ((c.minted * c.priceLamports) / 1e9).toFixed(2) + " " + ch.unit : "-";
+  const currency = collectionCurrency(c);
+  const vol = c.minted && c.priceLamports ? isStockCurrency(c.currency)
+    ? `${formatMintUnits(BigInt(c.minted) * BigInt(c.priceLamports), currency.decimals)} ${esc(currency.symbol)}`
+    : ((c.minted * c.priceLamports) / 1e9).toFixed(2) + " " + ch.unit
+    : "-";
   const cls = status === "Sold out" || status === "Ended" ? "colcard soldout dim" : live ? "colcard flick" : "colcard dim";
   const cover = coverOf(c);
   return `<a class="${cls}" href="?view=nft&c=${esc(c.slug)}">

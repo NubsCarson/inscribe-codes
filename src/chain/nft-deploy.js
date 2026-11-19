@@ -55,6 +55,10 @@ export async function deploy({ connection, wallet, burner, spec, items, onStage 
   let p = loadProgress(slug);
   if (p && (p.wallet !== who || p.burner !== burnerPk)) p = null;
   p = p || { wallet: who, burner: burnerPk };
+  const currency = spec.currency || "SOL";
+  if (p.stagingId && ((p.currency || "SOL") !== currency || p.price != null && p.price !== spec.price)) {
+    throw new Error("Restore the saved currency and price to resume this deployment.");
+  }
 
   // 1. Compress + stage in batches (begin -> batch* -> finish); the backend
   //    uploads each batch to Arweave and keeps the shuffle seed server-side.
@@ -62,6 +66,7 @@ export async function deploy({ connection, wallet, burner, spec, items, onStage 
     const begin = await call("/creator/stage/begin", {
       slug, creator: who, name: spec.name, symbol: spec.symbol,
       description: spec.description || "", price: spec.price || 0, deposit: spec.deposit || 0,
+      currency,
       royaltyBps: spec.royaltyBps || 0, sequential: !!spec.sequential,
     });
     if (begin.status === 409) throw new Error('the handle "' + slug + '" is taken; pick another');
@@ -92,7 +97,7 @@ export async function deploy({ connection, wallet, burner, spec, items, onStage 
     const fin = await call("/creator/stage/finish", { stagingId });
     if (fin.status !== 200) throw new Error((fin.json && fin.json.error) || "stage finish failed (" + fin.status + ")");
     Object.assign(p, {
-      stagingId, manifestJson: fin.json.manifestJson, collectionJson: fin.json.collectionJson,
+      stagingId, currency, price: spec.price, manifestJson: fin.json.manifestJson, collectionJson: fin.json.collectionJson,
       itemCount: fin.json.itemCount, deployFeeLamports: fin.json.deployFeeLamports,
     });
     saveProgress(slug, p);

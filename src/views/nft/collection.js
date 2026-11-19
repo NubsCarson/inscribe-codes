@@ -9,13 +9,13 @@ import { nftMarkets } from "../../services/markets.js";
 import { skeleton } from "../../ui/skeleton.js";
 import { paintProgress } from "../../ui/tty.js";
 import { connect as rpcConnect, explorerTx } from "../../chain/rpc.js";
-import { frame, statusOf, chainOf, segsHtml } from "./launchpad.js";
+import { collectionCurrency, formatMintUnits, isStockCurrency } from "../../chain/nft-currency.js";
+import { frame, statusOf, chainOf, coverOf, segsHtml } from "./launchpad.js";
 import { session, addr, connectWallet, ensureBurner, paintWalletPill } from "./session.js";
 import { mint, pendingMint } from "../../chain/nft.js";
 import { mintPlatformFee, PLATFORM_FEE_BPS } from "../../chain/nft-fees.js";
 
 const PAGE = 500;
-const formatMintAmount = (lamports) => (lamports / 1e9).toLocaleString("en-US", { maximumFractionDigits: 9 });
 const TIER_LABEL = { legendary: "Legendary", epic: "EPIC", rare: "RARE" };
 const st = { col: null, items: [], total: 0, hasRarity: false, filter: "all", mint: "idle", pct: 0, log: [], result: null, error: null, busy: false };
 
@@ -29,7 +29,10 @@ export async function render(root, slug) {
 
   const ch = chainOf(col);
   const status = statusOf(col);
-  const mintPrice = Number(col.priceLamports || 0);
+  const currency = collectionCurrency(col);
+  const mintUnit = esc(currency.symbol);
+  const formatMintAmount = (raw) => formatMintUnits(raw, currency.decimals);
+  const mintPrice = BigInt(col.priceLamports || 0);
   const priceLabel = mintPrice ? formatMintAmount(mintPrice) : "FREE";
   const platformFee = mintPlatformFee(mintPrice);
   const logo = col.logo || (col.coverSig ? imgUrl(col.coverSig) : "");
@@ -64,13 +67,14 @@ export async function render(root, slug) {
       <div class="lab" style="letter-spacing:.2em;opacity:.7">Mint</div>
       <div class="nf-pricebox">
         <div class="nf-price"><span class="c tl"></span><span class="c tr"></span><span class="c bl"></span><span class="c br"></span>
-          <span class="nf-pricenum${priceLabel.length > 6 ? " nf-pricenum-long" : ""}">${priceLabel}</span>${mintPrice ? `<span class="nf-priceunit">${ch.unit}</span>` : ""}</div>
+          <span class="nf-pricenum${priceLabel.length > 6 ? " nf-pricenum-long" : ""}">${priceLabel}</span>${mintPrice ? `<span class="nf-priceunit">${mintUnit}</span>` : ""}</div>
         ${ch.unit === "SOL" && mintPrice ? `
           <dl class="nf-mint-costs">
-            <div class="kv"><dt>Platform fee (${PLATFORM_FEE_BPS / 100}%)</dt><dd>${formatMintAmount(platformFee)} SOL</dd></div>
-            <div class="kv"><dt>Subtotal</dt><dd>${formatMintAmount(mintPrice + platformFee)} SOL</dd></div>
+            <div class="kv"><dt>Platform fee (${PLATFORM_FEE_BPS / 100}%)</dt><dd>${formatMintAmount(platformFee)} ${mintUnit}</dd></div>
+            <div class="kv"><dt>Subtotal</dt><dd>${formatMintAmount(mintPrice + platformFee)} ${mintUnit}</dd></div>
           </dl>` : ""}
-        <div class="cm" style="margin-top:10px">${ch.unit === "SOL" ? "One approval funds your burner wallet for the mint, including a buffer for inscription, account rent and network fees. Unused SOL is sent back after minting." : "Network costs are additional."}</div>
+        <div class="cm" style="margin-top:10px">${ch.unit !== "SOL" ? "Network costs are additional." : isStockCurrency(col.currency) ? "Inscription, account rent, and network costs are paid in SOL." : "One approval funds your burner wallet for the mint, including a buffer for inscription, account rent and network fees. Unused SOL is sent back after minting."}</div>
+        ${isStockCurrency(col.currency) ? '<div class="cm">Your wallet may apply the issuer’s display adjustment to the token amount.</div>' : ""}
       </div>
       <div>
         <div class="cc-segs" style="height:14px;margin:0" id="nc_segs">${segsHtml(col.minted, col.maxSupply)}</div>
@@ -176,6 +180,7 @@ function paintMint(root) {
   const el = root.querySelector("#nc_mint");
   if (!el || !st.col) return;
   const col = st.col;
+  const stock = isStockCurrency(col.currency);
   const you = root.querySelector("#nc_you");
   if (you) you.textContent = addr() ? "connected · " + shortAddr(addr()) : "not connected";
   if (st.mint === "prepare") {
@@ -183,7 +188,9 @@ function paintMint(root) {
     return;
   }
   if (st.mint === "approve") {
-    el.innerHTML = `<div class="ttyspin nf-approve">Approve ${formatMintAmount(st.fundingLamports)} SOL in your wallet</div>
+    el.innerHTML = st.stockApproval
+      ? '<div class="ttyspin nf-approve">Approve in your wallet…</div><div class="cm">Review the stock-token payment that completes the mint.</div>'
+      : `<div class="ttyspin nf-approve">Approve ${formatMintUnits(st.fundingLamports, 9)} SOL in your wallet</div>
       <div class="cm">This amount goes to your burner wallet to cover the mint. Any unused SOL comes back after minting. Your wallet may show a separate network fee for this transfer.</div>`;
     return;
   }
@@ -199,7 +206,7 @@ function paintMint(root) {
     el.innerHTML = `
       <div style="text-align:center;padding:6px 0 2px"><div data-tty class="nf-minted">Minted.</div><div class="cm" style="margin-top:10px">${esc(r.name || col.name + " #" + r.index)} · owner ${esc(shortAddr(addr()))}</div></div>
       <div>
-        ${r.refundLamports > 0 ? `<div class="kv"><span>unused SOL returned</span><span>${formatMintAmount(r.refundLamports)} SOL</span></div>`
+        ${r.refundLamports > 0 ? `<div class="kv"><span>unused SOL returned</span><span>${formatMintUnits(r.refundLamports, 9)} SOL</span></div>`
           : r.refundLamports === null ? '<div class="cm">Refund could not be confirmed. Any remaining SOL can be reused for your next mint.</div>' : ""}
         <div class="kv"><span>image on chain</span><span class="mint">${esc(shortAddr(r.C))}</span></div>
         <div class="kv"><span>details on chain</span><span class="mint">${esc(shortAddr(r.M))}</span></div>
@@ -224,7 +231,7 @@ function paintMint(root) {
       : cannot ? `<div class="btn2 nf-cannot">${cannot}</div>`
       : `<button class="btn nf-mintbtn" id="nc_mintbtn">${resume || st.error ? "Resume mint" : "Mint one"}</button>`}
     ${resume && !st.error ? '<div class="cm" style="color:#8dffa0">An unfinished mint was found; only the missing steps are redone.</div>' : ""}
-    <div class="cm"><div>One signature. You pay, you own it.</div><div>The NFT points at its image and details stored on chain.</div></div>`;
+    <div class="cm"><div>${stock ? "First approve the SOL funding, then approve the stock payment." : "One signature. You pay, you own it."}</div><div>The NFT points at its image and details stored on chain.</div></div>`;
   const c = el.querySelector("#nc_connect");
   if (c) c.onclick = () => connectWallet().then(() => { paintWalletPill(root.querySelector("#nav_wallet"), () => paintMint(root)); paintMint(root); }).catch((e) => alert(e.message));
   const b = el.querySelector("#nc_mintbtn");
@@ -243,7 +250,7 @@ const STAGE_LINE = {
 
 async function runMint(root) {
   if (st.busy) return;
-  st.busy = true; st.error = null; st.log = []; st.pct = 0;
+  st.busy = true; st.error = null; st.log = []; st.pct = 0; st.stockApproval = false;
   st.mint = "prepare"; paintMint(root);
   const live = () => {
     const b = root.querySelector("#nc_bar"), ph = root.querySelector("#nc_phase"), lg = root.querySelector("#nc_log");
@@ -257,7 +264,7 @@ async function runMint(root) {
     st.result = await mint({
       connection, wallet: session.wallet, burner, slug: st.col.slug, collection: st.col,
       onStage: (s, x) => {
-        if (s === "funding") { st.fundingLamports = x.lamports; st.mint = "approve"; paintMint(root); return; }
+        if (s === "funding" || s === "stock-payment") { st.stockApproval = s === "stock-payment"; st.fundingLamports = x?.lamports; st.mint = "approve"; paintMint(root); return; }
         if (st.mint !== "confirm") { st.mint = "confirm"; paintMint(root); }
         if (STAGE_PCT[s]) st.pct = Math.max(st.pct, STAGE_PCT[s]);
         if (STAGE_LINE[s]) { st.log.push(STAGE_LINE[s](x)); live(); }
