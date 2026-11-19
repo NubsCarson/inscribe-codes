@@ -5,6 +5,7 @@ import { createNoopSigner } from "@solana/signers";
 import {
   TENSOR_MARKETPLACE_PROGRAM_ADDRESS, LIST_STATE_DISCRIMINATOR, findListStatePda,
   getListStateDecoder, getListCoreInstructionAsync, getDelistCoreInstructionAsync, getBuyCoreInstructionAsync,
+  getBuyCoreSplInstructionAsync, findFeeVaultPda,
 } from "@tensor-foundation/marketplace";
 import bs58 from "bs58";
 import { apiBase, call } from "../services/nft-backend.js";
@@ -12,7 +13,24 @@ import { apiBase, call } from "../services/nft-backend.js";
 const CORE_PROGRAM = new PublicKey("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d");
 const TENSOR_PROGRAM = new PublicKey(TENSOR_MARKETPLACE_PROGRAM_ADDRESS);
 const BROKER = "EWNSTD8tikwqHMcRNuuNbZrnYJUiJdKq9UXLXSEU4wZ1";
-const LAMPORTS = 1_000_000_000n;
+const TOKEN_2022 = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+const ATA_PROGRAM = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+export const SOL_CURRENCY = Object.freeze({ mint: "SOL", symbol: "SOL", decimals: 9 });
+export const NVDAX_CURRENCY = Object.freeze({ mint: "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh", symbol: "NVDAx", decimals: 8 });
+
+function tokenAddress(owner, currency) {
+  return PublicKey.findProgramAddressSync(
+    [new PublicKey(owner).toBytes(), TOKEN_2022.toBytes(), new PublicKey(currency).toBytes()], ATA_PROGRAM,
+  )[0].toBase58();
+}
+
+function tokenAmount(data, currency, actor) {
+  if (!data || data.length < 165 || !new PublicKey(data.subarray(0, 32)).equals(new PublicKey(currency)) ||
+      !new PublicKey(data.subarray(32, 64)).equals(new PublicKey(actor)) || data[108] !== 1) {
+    throw Error("The buyer’s NVDAx account could not be verified.");
+  }
+  return new DataView(data.buffer, data.byteOffset, data.byteLength).getBigUint64(64, true);
+}
 const sameBytes = (a, b) => a.length === b.length && a.every((byte, i) => byte === b[i]);
 const option = value => value.__option === "None" ? null : value.value;
 
@@ -30,11 +48,13 @@ function assertLocalMarket(connection) {
   }
 }
 
-export function parseListingPrice(value) {
-  const match = /^(\d+)(?:\.(\d{1,9}))?$/.exec(String(value).trim());
-  if (!match || match[1].length > 7) throw Error("Enter a SOL price with up to nine decimal places.");
-  const amount = BigInt(match[1]) * LAMPORTS + BigInt((match[2] || "").padEnd(9, "0"));
-  if (amount <= 0n || amount > BigInt(Number.MAX_SAFE_INTEGER)) throw Error("Enter a positive SOL price within the supported range.");
+export function parseListingPrice(value, { decimals, symbol }) {
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(String(value).trim());
+  if (!match || match[1].length > 7 || (match[2]?.length ?? 0) > decimals) {
+    throw Error("Enter a " + symbol + " price with up to " + decimals + " decimal places.");
+  }
+  const amount = BigInt(match[1]) * 10n ** BigInt(decimals) + BigInt((match[2] || "").padEnd(decimals, "0"));
+  if (amount <= 0n || amount > BigInt(Number.MAX_SAFE_INTEGER)) throw Error("Enter a positive price within the supported range.");
   return amount;
 }
 
@@ -77,13 +97,15 @@ export async function readMarketState(connection, { asset, collection }) {
   if (Object.entries(terms).some(([key, value]) => proxy[key] !== value)) {
     throw Error("The proxy quote does not match the verified on-chain listing.");
   }
-  const native = currency === "SOL" && !state.cosigner && currentOwner === order;
-  const buySupported = native && !expired && !terms.privateTaker && proxy.buySupported === true;
-  const currencyInfo = currency === "SOL" ? { symbol: "SOL", decimals: 9 }
+  const isSupportedCurrency = currency === "SOL" || currency === NVDAX_CURRENCY.mint;
+  const localOrder = isSupportedCurrency && !state.cosigner && currentOwner === order;
+  const buySupported = localOrder && !expired && !terms.privateTaker && proxy.buySupported === true;
+  const currencyInfo = currency === "SOL" ? SOL_CURRENCY
+    : currency === NVDAX_CURRENCY.mint ? NVDAX_CURRENCY
     : proxy.currencyInfo?.mint === currency && /^[\w.-]{1,12}$/.test(proxy.currencyInfo.symbol) &&
       Number.isInteger(proxy.currencyInfo.decimals) && proxy.currencyInfo.decimals >= 0 && proxy.currencyInfo.decimals <= 18
       ? proxy.currencyInfo : null;
-  return { currentOwner, listing: { ...terms, currencyInfo, buySupported, delistSupported: native }, core };
+  return { currentOwner, listing: { ...terms, currencyInfo, buySupported, delistSupported: localOrder }, core };
 }
 
 async function readRoyalties(connection, asset, collection, core) {
@@ -142,7 +164,7 @@ async function transactionFromProxy(connection, actor, expected, quote) {
   return transaction;
 }
 
-export async function prepareMarketTrade(connection, { action, asset, collection, actor, price, listing: before }) {
+export async function prepareMarketTrade(connection, { action, asset, collection, actor, price, currency: selectedCurrency, listing: before }) {
   const { currentOwner, listing, core } = await readMarketState(connection, { asset, collection });
   if (before?.order !== listing?.order || before?.price !== listing?.price ||
       before?.owner !== listing?.owner || before?.currency !== listing?.currency) {
@@ -150,24 +172,46 @@ export async function prepareMarketTrade(connection, { action, asset, collection
   }
   const signer = createNoopSigner(new PublicKey(actor).toBase58());
   const accounts = { asset, collection, listState: listing?.order };
-  let request, expected, askLamports, purchaseCap;
+  const mintAddress = listing?.currency ?? selectedCurrency?.mint ?? SOL_CURRENCY.mint;
+  const stock = mintAddress === NVDAX_CURRENCY.mint;
+  if (mintAddress !== SOL_CURRENCY.mint && !stock) throw Error("This currency is unavailable for local checkout.");
+  const currency = stock ? NVDAX_CURRENCY : SOL_CURRENCY;
+  const tokenAccount = action === "buy" && stock ? tokenAddress(actor, currency.mint) : null;
+  if (stock) {
+    const mint = await connection.getAccountInfo(new PublicKey(currency.mint), "confirmed");
+    if (!mint?.owner.equals(TOKEN_2022) || mint.data.length < 82 || mint.data[44] !== NVDAX_CURRENCY.decimals || mint.data[45] !== 1) {
+      throw Error("The NVDAx Token-2022 mint could not be verified.");
+    }
+  }
+  let request, expected, ask, purchaseCap;
   if (action === "list" && !listing && currentOwner === actor) {
-    askLamports = parseListingPrice(price);
-    request = { mint: asset, owner: actor, price: Number(askLamports), currency: "SOL" };
-    expected = await getListCoreInstructionAsync({ ...accounts, owner: signer, payer: signer, amount: askLamports, makerBroker: BROKER });
+    ask = parseListingPrice(price, currency);
+    request = { mint: asset, owner: actor, price: Number(ask), currency: currency.mint };
+    expected = await getListCoreInstructionAsync({ ...accounts, owner: signer, payer: signer, amount: ask, makerBroker: BROKER,
+      ...(stock ? { currency: currency.mint } : {}) });
   } else if (action === "delist" && listing?.delistSupported && listing.owner === actor) {
-    askLamports = BigInt(listing.price);
+    ask = BigInt(listing.price);
     request = { mint: asset, owner: actor };
     expected = await getDelistCoreInstructionAsync({ ...accounts, owner: signer, rentDestination: listing.rentPayer ?? actor });
   } else if (action === "buy" && listing?.buySupported && listing.owner !== actor) {
     const { basisPoints, creators } = await readRoyalties(connection, asset, collection, core);
-    askLamports = BigInt(listing.price);
-    purchaseCap = askLamports + askLamports * basisPoints / 10_000n;
-    if (purchaseCap > BigInt(Number.MAX_SAFE_INTEGER)) throw Error("The listing amount is outside the exact SOL range.");
-    request = { mint: asset, buyer: actor, owner: listing.owner, maxPrice: Number(purchaseCap), currency: "SOL" };
-    expected = await getBuyCoreInstructionAsync({ ...accounts, buyer: actor, payer: signer, owner: listing.owner,
+    ask = BigInt(listing.price);
+    purchaseCap = ask + ask * basisPoints / 10_000n;
+    if (purchaseCap > BigInt(Number.MAX_SAFE_INTEGER)) throw Error("The listing amount is outside the exact checkout range.");
+    request = { mint: asset, buyer: actor, owner: listing.owner, maxPrice: Number(purchaseCap), currency: currency.mint };
+    const buy = { ...accounts, buyer: actor, payer: signer, owner: listing.owner,
       takerBroker: BROKER, makerBroker: listing.makerBroker ?? undefined, rentDestination: listing.rentPayer ?? listing.owner,
-      maxAmount: purchaseCap, creators });
+      maxAmount: purchaseCap, creators };
+    if (stock) {
+      const [feeVault] = await findFeeVaultPda({ address: listing.order });
+      expected = await getBuyCoreSplInstructionAsync({ ...buy, feeVault, currency: currency.mint,
+        currencyTokenProgram: TOKEN_2022.toBase58(), payerCurrencyTa: tokenAccount,
+        ownerCurrencyTa: tokenAddress(listing.owner, currency.mint),
+        feeVaultCurrencyTa: tokenAddress(feeVault, currency.mint), takerBrokerTa: tokenAddress(BROKER, currency.mint),
+        makerBrokerTa: listing.makerBroker ? tokenAddress(listing.makerBroker, currency.mint) : undefined,
+        creatorsCurrencyTa: creators.map(creator => tokenAddress(creator, currency.mint)),
+      });
+    } else expected = await getBuyCoreInstructionAsync(buy);
   } else {
     throw Error("This wallet cannot perform that action on the verified listing.");
   }
@@ -175,31 +219,38 @@ export async function prepareMarketTrade(connection, { action, asset, collection
   const { status, json } = await call("/market/" + action, request);
   if (status !== 200) throw Error(json?.error || "Tensor could not prepare this transaction.");
   const transaction = await transactionFromProxy(connection, actor, expected, json);
-  const { feeLamports, estimatedDebitLamports } = await simulateTrade(connection, transaction, actor);
-  if (action === "buy" && (!Number.isSafeInteger(estimatedDebitLamports) || estimatedDebitLamports < feeLamports)) {
+  const quote = await simulateTrade(connection, transaction, actor, currency.mint, tokenAccount);
+  if (action === "buy" && (quote.estimatedDebitLamports < quote.feeLamports ||
+      (stock && (quote.tokenDebit === null || quote.tokenDebit < purchaseCap)))) {
     throw Error("Could not verify the buyer’s total from simulation.");
   }
-  return { transaction, feeLamports, estimatedDebitLamports, askLamports, purchaseCap };
+  return { transaction, ...quote, ask, purchaseCap, currency, tokenAccount };
 }
 
-async function simulateTrade(connection, transaction, actor) {
-  const actorKey = new PublicKey(actor);
-  const [{ value: feeLamports }, beforeBalance] = await Promise.all([
+async function simulateTrade(connection, transaction, actor, currency, tokenAccount) {
+  const addresses = tokenAccount ? [actor, tokenAccount] : [actor];
+  const [{ value: feeLamports }, before] = await Promise.all([
     connection.getFeeForMessage(transaction.message, "confirmed"),
-    connection.getBalanceAndContext(actorKey, "confirmed"),
+    connection.getMultipleAccountsInfoAndContext(addresses.map(address => new PublicKey(address)), "confirmed"),
   ]);
-  if (!Number.isSafeInteger(feeLamports) || feeLamports < 0 || !Number.isSafeInteger(beforeBalance.value)) {
+  const [wallet, token] = before.value;
+  if (!Number.isSafeInteger(feeLamports) || feeLamports < 0 || !Number.isSafeInteger(wallet?.lamports)) {
     throw Error("The network fee or balance is unavailable. Review the trade again.");
   }
+  if (tokenAccount && !token?.owner.equals(TOKEN_2022)) throw Error("This wallet needs an NVDAx token account.");
+  const priorTokens = tokenAccount ? tokenAmount(token.data, currency, actor) : null;
   const simulated = await connection.simulateTransaction(transaction, {
-    commitment: "confirmed", sigVerify: false, minContextSlot: beforeBalance.context.slot,
-    accounts: { encoding: "base64", addresses: [actor] },
+    commitment: "confirmed", sigVerify: false, minContextSlot: before.context.slot,
+    accounts: { encoding: "base64", addresses },
   });
-  const simulatedBalance = simulated.value.accounts?.[0]?.lamports;
-  if (simulated.value.err || !Number.isSafeInteger(simulatedBalance)) {
+  const [simulatedWallet, simulatedToken] = simulated.value.accounts ?? [];
+  if (simulated.value.err || !Number.isSafeInteger(simulatedWallet?.lamports) ||
+      (tokenAccount && (simulatedToken?.owner !== TOKEN_2022.toBase58() || simulatedToken.data?.[1] !== "base64"))) {
     throw Error("The reviewed transaction did not pass local simulation.");
   }
-  return { feeLamports, estimatedDebitLamports: beforeBalance.value - simulatedBalance };
+  const tokenDebit = tokenAccount
+    ? priorTokens - tokenAmount(Uint8Array.from(atob(simulatedToken.data[0]), c => c.charCodeAt(0)), currency, actor) : null;
+  return { feeLamports, estimatedDebitLamports: wallet.lamports - simulatedWallet.lamports, tokenDebit };
 }
 
 export async function submitMarketTrade(connection, wallet, reviewed, { actor, asset, collection, genesis, listing, isCurrent }, beforeSign) {
@@ -229,9 +280,10 @@ export async function submitMarketTrade(connection, wallet, reviewed, { actor, a
     : latest.listing || latest.currentOwner !== actor) {
     throw Error("The listing changed. Refresh to review it again.");
   }
-  const quote = await simulateTrade(connection, transaction, actor);
-  if (quote.feeLamports !== reviewed.feeLamports || quote.estimatedDebitLamports !== reviewed.estimatedDebitLamports) {
-    throw Error("The estimated SOL debit or network fee changed. Review the trade again.");
+  const quote = await simulateTrade(connection, transaction, actor, reviewed.currency.mint, reviewed.tokenAccount);
+  if (quote.feeLamports !== reviewed.feeLamports || quote.estimatedDebitLamports !== reviewed.estimatedDebitLamports ||
+      quote.tokenDebit !== reviewed.tokenDebit) {
+    throw Error("The estimated debit or network fee changed. Review the trade again.");
   }
   if (!isCurrent()) throw Error("The wallet or viewer changed. Review the trade again.");
   beforeSign();
