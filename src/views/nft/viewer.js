@@ -59,6 +59,7 @@ function viewerHtml(a, info, listing, headerRight) {
       ${tier ? `<div class="nf-vsec"><div class="lab nf-vlab">Rarity</div><div class="nf-vrar">${esc(tier)}${rarity.rank ? ` · rank ${rarity.rank} / ${rarity.total}` : ""}</div><div class="nf-vpips">${pips}</div></div>` : ""}
       <div class="nf-vsec"><div class="lab nf-vlab">Owner</div><div class="nf-vowner">${esc(shortAddr(a.owner))}</div></div>
       ${marketHtml(a, listing)}
+      <div data-market-preview hidden></div>
       ${extra.length ? `<div class="nf-vsec"><div class="lab nf-vlab">Traits</div><div class="nf-vkv">${extra.map((x) => `<span>${esc(x.trait_type)}</span><b>${esc(String(x.value))}</b>`).join("")}</div></div>` : ""}
       <div class="nf-vsec" style="margin-top:auto"><div class="lab nf-vlab">Status</div>
         <div class="nf-vkv"><span>chain</span><b>solana</b><span>std</span><b>${esc(std)}</b><span>storage</span><b class="mint">inscribed</b><span>mutable</span><b>no</b></div></div>
@@ -88,6 +89,12 @@ function viewerHtml(a, info, listing, headerRight) {
     </div>
   </div>
 </div>`;
+}
+
+function wireMarketPreview(scope, a, listing) {
+  if (!["127.0.0.1", "localhost", "[::1]"].includes(location.hostname) || addr() !== a.owner) return;
+  import("./market-preview.js").then(({ mountSellerPreview }) =>
+    mountSellerPreview(scope.querySelector("[data-market-preview]"), a, listing)).catch(() => {});
 }
 
 // The two right/left buttons each open a popup: the chain proof and the json.
@@ -159,13 +166,16 @@ function openProve(assetAddress, readAsset) {
 // Full page, for a direct ?view=nft&asset= URL.
 export async function render(root, assetAddress) {
   const body = frame(root, '<div class="nf-note">reading the asset from chain...</div>');
-  paintWalletPill(root.querySelector("#nav_wallet"));
+  let refreshMarket = () => {};
+  paintWalletPill(root.querySelector("#nav_wallet"), () => refreshMarket());
   const { a, info, listing, readAsset } = await load(assetAddress);
   if (!body.isConnected) return;
   if (a.error) { body.innerHTML = '<div class="nf-note">could not read ' + esc(assetAddress) + ": " + esc(a.error.message) + "</div>"; return; }
   const back = `<a class="wh-right wh-x" href="${info && info.slug ? "?view=nft&c=" + esc(info.slug) : "?view=nft"}">${info && info.slug ? "← collection" : "← launchpad"}</a>`;
   body.innerHTML = `<div class="nf-stack">${viewerHtml(a, info, listing, back)}</div>`;
   wire(body, a, readAsset);
+  refreshMarket = () => wireMarketPreview(body, a, listing);
+  refreshMarket();
 }
 
 // Popup over the current screen. Closing just removes the overlay, so the page
@@ -187,4 +197,5 @@ export async function openModal(assetAddress) {
   overlay.innerHTML = viewerHtml(a, info, listing, x);
   overlay.querySelector(".nv-close").onclick = close;
   wire(overlay, a, readAsset);
+  wireMarketPreview(overlay, a, listing);
 }
