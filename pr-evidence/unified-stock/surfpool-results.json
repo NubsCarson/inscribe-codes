@@ -1,0 +1,66 @@
+{
+  "network": "Local Surfpool fork",
+  "frontend": "a20d527f27e0a3726f9823ca24fea7d55ef4e594",
+  "backend": "cd7100c9c46e1cfb8f08452e7c1e401b864d3881",
+  "checks": {
+    "fourSwapsAndMints": true,
+    "stalePriceRollback": true,
+    "fundedBuyerSkipsSwap": true,
+    "buttonHiddenForInvalidQuote": true,
+    "upstreamReadOnly": true
+  },
+  "results": [
+    {
+      "stock": "NVDAx",
+      "venue": "Orca",
+      "stockBoughtBaseUnits": "30000000",
+      "stockBought": "0.30",
+      "swapCapLamports": "621562327",
+      "actualSwapLamports": "618469978",
+      "networkFeeLamports": 15000,
+      "totalSwapAndMintDebitLamports": 631239298,
+      "localTransactionSignature": "4p87dy9zrnMTCqBSno3YEfbNka9Zm8dtx8FywAm4xc7TMAsjzh5b2WN4qRdiBsinYwXbNcdwqDVhehhn1D285QAH",
+      "refundDisplay": "unused SOL returned 0.03139024 SOL",
+      "slot": 471267958
+    },
+    {
+      "stock": "NVDA",
+      "venue": "Orca",
+      "stockBoughtBaseUnits": "300000",
+      "stockBought": "0.30",
+      "swapCapLamports": "620493308",
+      "actualSwapLamports": "617406277",
+      "networkFeeLamports": 15000,
+      "totalSwapAndMintDebitLamports": 630175597,
+      "localTransactionSignature": "4eESVvgZFgdG8PrcjmxB4FFcyXndva7sMbxLRHbfN2FVgRr4nzh9q8fEm6RMeMsuwHc7gkMYr8LFZfKpkmS3LiEZ",
+      "refundDisplay": "unused SOL returned 0.03139524 SOL",
+      "slot": 471268007
+    },
+    {
+      "stock": "BLK",
+      "venue": "Raydium",
+      "stockBoughtBaseUnits": "300000",
+      "stockBought": "0.30",
+      "swapCapLamports": "4788650213",
+      "actualSwapLamports": "4764826082",
+      "networkFeeLamports": 15000,
+      "totalSwapAndMintDebitLamports": 4779634682,
+      "localTransactionSignature": "3ATi36Kh2huYu4chu9Qw1B6WYH2dax4NDBJrqGQFAuQixiCrdTCEkHVWNRHWTWHwMHUSKiVGyhgV9rd5FUD2DRVd",
+      "refundDisplay": "unused SOL returned 0.03139524 SOL",
+      "slot": 471268051
+    },
+    {
+      "stock": "SPY",
+      "venue": "Raydium",
+      "stockBoughtBaseUnits": "300000",
+      "stockBought": "0.30",
+      "swapCapLamports": "3017450531",
+      "actualSwapLamports": "3002438339",
+      "networkFeeLamports": 15000,
+      "totalSwapAndMintDebitLamports": 3015207659,
+      "localTransactionSignature": "37WkMYnqVJixobPk4F3TvirQQwjE4WxJ7yMKYdvNVKxoCwmiZFVh6AY1yH1YCEJgAe49Bn5T3mb6TGzcnQ79JKUu",
+      "refundDisplay": "unused SOL returned 0.03139524 SOL",
+      "slot": 471268088
+    }
+  ]
+}
