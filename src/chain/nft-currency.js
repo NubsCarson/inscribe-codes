@@ -1,4 +1,4 @@
-import { call } from "../services/nft-backend.js";
+import { apiBase, call } from "../services/nft-backend.js";
 
 export const SOL = { mint: "SOL", symbol: "SOL", decimals: 9 };
 const SOL_SENTINEL = "11111111111111111111111111111111";
@@ -28,9 +28,18 @@ export function formatMintUnits(units, decimals) {
   return (amount / base).toLocaleString("en-US") + (fraction ? "." + fraction : "");
 }
 
-export async function availableMintCurrencies() {
+export const isLoopback = (hostname) => ["localhost", "127.0.0.1", "[::1]"].includes(hostname);
+
+export async function mintPaymentOptions() {
   const { status, json } = await call("/creator/currencies");
-  if (status !== 200 || json?.checkout !== "wallet-v1" || !Array.isArray(json.currencies)) return [SOL];
-  return [SOL, ...json.currencies.filter(c => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(c.mint || "") &&
+  if (status !== 200 || json?.checkout !== "wallet-v1" || !Array.isArray(json.currencies)) {
+    return { currencies: [SOL], payWithSol: false, payWithSolMints: [] };
+  }
+  const currencies = [SOL, ...json.currencies.filter(c => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(c.mint || "") &&
     /^[\w.-]{1,12}$/.test(c.symbol || "") && Number.isInteger(c.decimals) && c.decimals >= 0 && c.decimals <= 9)];
+  const local = isLoopback(location.hostname) && isLoopback(new URL(apiBase(), location.href).hostname);
+  const payWithSol = local && json.payWithSol === true;
+  const allowedRoutes = payWithSol && Array.isArray(json.payWithSolMints) ? json.payWithSolMints : [];
+  return { currencies, payWithSol, payWithSolMints: currencies
+    .filter(currency => allowedRoutes.includes(currency.mint)).map(currency => currency.mint) };
 }

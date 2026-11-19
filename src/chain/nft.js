@@ -10,14 +10,14 @@
 //   C = feed row {kind:"image", body:"data:<mime>;base64,<bytes>", who:<wallet>}
 //       written with the user's inventory PDA referenced, exactly like a post.
 //   M = writer.codeIn of the backend's /json body, inscribed verbatim.
-import { Keypair, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
+import { Keypair, PublicKey, SystemProgram, Transaction, VersionedTransaction } from "@solana/web3.js";
 import { writer } from "@iqlabs-official/solana-sdk";
 import { estimateCost, getAccountRent, topUp, sweep, confirmOrCheck } from "./burner.js";
 import { writeFeedRow } from "./feed.js";
 import { call, collection as getCollection } from "../services/nft-backend.js";
 import { notify, imgUrl } from "../services/gateway.js";
 import { mintPlatformFee } from "./nft-fees.js";
-import { isStockCurrency } from "./nft-currency.js";
+import { isStockCurrency, mintPaymentOptions, isLoopback } from "./nft-currency.js";
 
 // One popup funds the whole mint, so the budget is generous and the remainder
 // sweeps back: price (including any deposit) + platform fee + register-time
@@ -82,7 +82,7 @@ async function mintCall(slug, body) {
     const r = await call("/c/" + slug + "/mint", body);
     if (r.status === 200) {
       if (r.json.status === "confirmed") return { confirmed: true, index: r.json.index };
-      return { transaction: r.json.transaction, lastValidBlockHeight: r.json.lastValidBlockHeight, index: r.json.index };
+      return { transaction: r.json.transaction, lastValidBlockHeight: r.json.lastValidBlockHeight, index: r.json.index, payWithSol: r.json.payWithSol };
     }
     if (r.status === 503) { // chain unreadable, not a verdict: keep the reservation alive and retry
       await call("/c/" + slug + "/reserve/touch", { reservationId: body.reservationId }).catch(() => {});
@@ -118,7 +118,7 @@ async function reportLanded(slug, reservationId) {
 // ── mint ────────────────────────────────────────────────────────────────────
 // onStage(stage, extra): funding, deposit, reserve, image, metadata, register, stock-payment,
 // confirming, done. onProgress drives the chunk bar for C.
-export async function mint({ connection, wallet, burner, slug, collection, onStage, onProgress }) {
+export async function mint({ connection, wallet, burner, slug, collection, payWithSol = false, reviewSolPayment, onStage, onProgress }) {
   const who = wallet.publicKey.toBase58();
   const burnerPk = burner.publicKey.toBase58();
   const stage = (s, x) => { try { onStage && onStage(s, x); } catch (e) {} };
@@ -130,7 +130,18 @@ export async function mint({ connection, wallet, burner, slug, collection, onSta
   let p = loadProgress(slug);
   if (p && (p.wallet !== who || p.burner !== burnerPk)) p = null;
   p = p || { wallet: who, burner: burnerPk };
-  if (payment && !p.reservationId) await payment.checkStockPayment(connection, wallet.publicKey, col);
+  if (!p.reservationId) p.payWithSol = Boolean(payment && payWithSol);
+  const solPayment = p.payWithSol ? await import("./nft-sol-payment.js") : null;
+  if (solPayment) {
+    solPayment.assertLocalSolPayment(connection);
+    const options = await mintPaymentOptions();
+    if (!options.payWithSolMints.includes(col.currency.mint) || !options.currencies.some(currency => currency.mint === col.currency.mint &&
+        currency.decimals === col.currency.decimals) || !reviewSolPayment) {
+      throw new Error("Pay with SOL is unavailable for this collection.");
+    }
+  } else if (payment && !p.reservationId) {
+    await payment.checkStockPayment(connection, wallet.publicKey, col);
+  }
   const touch = () => (p.reservationId ? call("/c/" + slug + "/reserve/touch", { reservationId: p.reservationId }).catch(() => {}) : Promise.resolve());
 
   // 1. Fund once for the whole mint.
@@ -174,7 +185,9 @@ export async function mint({ connection, wallet, burner, slug, collection, onSta
     const row = { kind: "image", body: "data:" + p.imageMime + ";base64," + bytesToBase64(bytes), who };
     p.C = await writeFeedRow({ connection, burner, row: JSON.stringify(row), owner: wallet.publicKey, onProgress });
     saveProgress(slug, p);
-    void notify(p.C, { ...row, __signer: burnerPk }, { signer: who });
+    if (!isLoopback(new URL(connection.rpcEndpoint).hostname)) {
+      void notify(p.C, { ...row, __signer: burnerPk }, { signer: who });
+    }
   }
 
   // 4. Metadata inscription M: the canonical JSON from the backend, verbatim.
@@ -194,9 +207,17 @@ export async function mint({ connection, wallet, burner, slug, collection, onSta
   else { asset = Keypair.generate(); p.asset = Array.from(asset.secretKey); saveProgress(slug, p); }
   stage("register");
   await touch();
-  let co = await mintCall(slug, { reservationId: p.reservationId, inscriptionSig: p.C, metaSig: p.M, asset: asset.publicKey.toBase58() });
-
   let mintSig = null;
+  if (solPayment && p.solSubmission) {
+    if (await solPayment.recoverSolMint(connection, p.solSubmission)) mintSig = p.solSubmission.signature;
+    else {
+      delete p.solSubmission;
+      saveProgress(slug, p);
+    }
+  }
+  const request = { reservationId: p.reservationId, inscriptionSig: p.C, metaSig: p.M, asset: asset.publicKey.toBase58() };
+  if (solPayment) request.payWithSol = true;
+  const co = mintSig ? { confirmed: true } : await mintCall(slug, request);
   if (!co.confirmed) {
     if (payment) {
       const latest = await getCollection(slug);
@@ -204,25 +225,62 @@ export async function mint({ connection, wallet, burner, slug, collection, onSta
           latest.currency?.decimals !== col.currency.decimals) {
         throw new Error("The mint price changed. Reopen the collection to review the new price.");
       }
-      const tx = Transaction.from(base64ToBytes(co.transaction));
-      payment.validateStockRegister(tx, { buyer: wallet.publicKey, asset: asset.publicKey, collection: col, index: p.index });
-      tx.partialSign(asset);
-      stage("stock-payment");
-      const signed = await wallet.signTransaction(tx);
-      stage("confirming");
-      mintSig = await connection.sendRawTransaction(signed.serialize());
-      if (!(await confirmOrCheck(connection, mintSig, tx.recentBlockhash, co.lastValidBlockHeight))) throw new Error("Stock mint confirmation is pending. Resume to check its status.");
+      const expected = { buyer: wallet.publicKey, asset: asset.publicKey, collection: col, index: p.index };
+      if (co.payWithSol) {
+        if (!solPayment || !Number.isSafeInteger(co.lastValidBlockHeight)) throw new Error("Unexpected SOL payment transaction.");
+        const tx = await solPayment.prepareSolMint(connection, base64ToBytes(co.transaction), co.payWithSol, expected);
+        const balance = await connection.getBalanceAndContext(expected.buyer, "confirmed");
+        const result = await connection.simulateTransaction(tx, {
+          commitment: "confirmed", sigVerify: false, minContextSlot: balance.context.slot,
+          accounts: { encoding: "base64", addresses: [expected.buyer.toBase58()] },
+        });
+        if (result.value.err) throw new Error("The swap and mint did not pass simulation. Resume for a fresh quote.");
+        const postBalance = result.value.accounts?.[0]?.lamports;
+        const estimatedTotalLamports = Number.isSafeInteger(postBalance)
+          ? Math.max(0, balance.value - postBalance)
+          : null;
+        if (!await reviewSolPayment({ ...co.payWithSol, estimatedTotalLamports })) throw new Error("SOL payment canceled.");
+        if (!wallet.publicKey.equals(expected.buyer) || await connection.getBlockHeight("confirmed") >= co.lastValidBlockHeight) {
+          throw new Error("The wallet changed or the quote expired. Resume for a fresh quote.");
+        }
+        tx.sign([asset]);
+        const reviewed = VersionedTransaction.deserialize(tx.serialize());
+        stage("stock-payment", { swap: true });
+        const signed = await wallet.signTransaction(tx);
+        const signature = solPayment.checkedSolSignature(reviewed, signed);
+        if (!wallet.publicKey.equals(expected.buyer)) throw new Error("The wallet changed before payment.");
+        p.solSubmission = { signature, lastValidBlockHeight: co.lastValidBlockHeight };
+        // A rejected or ambiguous send must be recoverable before we broadcast again.
+        localStorage.setItem(RKEY(slug), JSON.stringify(p));
+        stage("confirming");
+        mintSig = await connection.sendRawTransaction(signed.serialize());
+        if (mintSig !== signature || !(await confirmOrCheck(connection, signature,
+          reviewed.message.recentBlockhash, co.lastValidBlockHeight))) {
+          throw new Error("Swap and mint confirmation is pending. Resume to check the receipt.");
+        }
+      } else {
+        const tx = Transaction.from(base64ToBytes(co.transaction));
+        payment.validateStockRegister(tx, expected);
+        tx.partialSign(asset);
+        stage("stock-payment");
+        const signed = await wallet.signTransaction(tx);
+        stage("confirming");
+        mintSig = await connection.sendRawTransaction(signed.serialize());
+        if (!(await confirmOrCheck(connection, mintSig, tx.recentBlockhash, co.lastValidBlockHeight))) throw new Error("Stock mint confirmation is pending. Resume to check its status.");
+      }
     } else {
+      if (co.payWithSol) throw new Error("Unexpected swap for a SOL-priced mint.");
+      let register = co;
       stage("confirming");
       for (let attempt = 0; attempt < 3; attempt++) {
-        try { mintSig = await sendRegister(connection, co, burner, asset); break; }
+        try { mintSig = await sendRegister(connection, register, burner, asset); break; }
         catch (e) {
           if (attempt >= 2) throw e;
           // Blockhash likely aged out; replay for the same reservation and asset.
           await touch();
           const fresh = await mintCall(slug, { reservationId: p.reservationId });
           if (fresh.confirmed) { mintSig = "(already landed)"; break; }
-          co = fresh;
+          register = fresh;
         }
       }
     }

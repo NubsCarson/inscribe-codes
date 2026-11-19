@@ -9,7 +9,7 @@ import { call } from "../../services/nft-backend.js";
 import { connect as rpcConnect, explorerTx } from "../../chain/rpc.js";
 import { fileToBitmap, bitmapToImageData, compositeImageData, compositeDataUrl } from "../../ui/image.js";
 import { session, addr, connectWallet, ensureBurner, paintWalletPill } from "./session.js";
-import { SOL, availableMintCurrencies, formatMintUnits, isStockCurrency, toMintUnits } from "../../chain/nft-currency.js";
+import { SOL, mintPaymentOptions, formatMintUnits, isStockCurrency, toMintUnits } from "../../chain/nft-currency.js";
 
 const st = {
   step: 0, producer: "generate",
@@ -412,7 +412,7 @@ function wire(root, modal) {
     if (st.step === 3) {
       go(4);
       const settings = root.querySelector("#ns_currency");
-      availableMintCurrencies().then((currencies) => {
+      mintPaymentOptions().then(({ currencies }) => {
         if (st.step !== 4 || !settings?.isConnected) return;
         st.currencies = currencies;
         st.currency = currencies.find(c => c.mint === st.currency.mint) || SOL;
@@ -642,7 +642,7 @@ async function runDeploy(root) {
     if (lg) lg.innerHTML = st.log.map((l) => `<div class="${l.ok ? "ok" : ""}">&gt; ${esc(l.text)}</div>`).join("");
   };
   try {
-    if (isStockCurrency(st.currency) && !(await availableMintCurrencies()).some(
+    if (isStockCurrency(st.currency) && !(await mintPaymentOptions()).currencies.some(
       currency => currency.mint === st.currency.mint && currency.decimals === st.currency.decimals,
     )) throw new Error("Stock checkout is unavailable for the selected currency.");
     const connection = rpcConnect();

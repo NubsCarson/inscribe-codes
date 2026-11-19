@@ -1,31 +1,39 @@
 import { PublicKey, SystemProgram } from "@solana/web3.js";
 import { mintPlatformFee } from "./nft-fees.js";
-import { availableMintCurrencies, formatMintUnits } from "./nft-currency.js";
+import { mintPaymentOptions, formatMintUnits } from "./nft-currency.js";
 
-const REGISTRY = new PublicKey("FCGhsCf5sMM7Z5APta1hi76WGTvrfMJnBr4QSR3w13Fu");
-const ASSOCIATED_TOKEN = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
-const TOKEN_2022 = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+export const REGISTRY = new PublicKey("FCGhsCf5sMM7Z5APta1hi76WGTvrfMJnBr4QSR3w13Fu");
+export const ASSOCIATED_TOKEN = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+export const TOKEN_2022 = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 const PLATFORM = new PublicKey("EWNSTD8tikwqHMcRNuuNbZrnYJUiJdKq9UXLXSEU4wZ1");
 const REGISTER_ITEM = [88, 92, 1, 145, 20, 252, 237, 209];
 
-const paymentAccount = (owner, mint) => PublicKey.findProgramAddressSync(
+export const paymentAccount = (owner, mint) => PublicKey.findProgramAddressSync(
   [owner.toBuffer(), TOKEN_2022.toBuffer(), mint.toBuffer()], ASSOCIATED_TOKEN,
 )[0];
 
 export async function checkStockPayment(connection, buyer, collection) {
   const { currency, priceLamports } = collection;
-  const supported = (await availableMintCurrencies()).find(item => item.mint === currency.mint);
+  const supported = (await mintPaymentOptions()).currencies.find(item => item.mint === currency.mint);
   if (!supported || supported.decimals !== currency.decimals) throw new Error("Stock checkout is unavailable for this currency.");
-  const account = paymentAccount(buyer, new PublicKey(currency.mint));
   const price = BigInt(priceLamports);
   const due = price + mintPlatformFee(price);
-  const info = await connection.getAccountInfo(account, "confirmed");
-  if (info && !info.owner.equals(TOKEN_2022)) throw new Error("The buyer's stock token account has the wrong program.");
-  const token = info && (await connection.getTokenAccountBalance(account, "confirmed")).value;
-  if (token && token.decimals !== currency.decimals) throw new Error("The stock token's decimals differ from the collection.");
-  if (!token || BigInt(token.amount) < due) {
-    throw new Error(`The wallet's ${currency.symbol} payment account needs ${formatMintUnits(due, currency.decimals)} ${currency.symbol} to mint.`);
+  const balance = await readStockBalance(connection, buyer, currency);
+  if (balance < due) {
+    const total = formatMintUnits(due, currency.decimals);
+    const missing = formatMintUnits(due - balance, currency.decimals);
+    throw new Error(`Add ${missing} ${currency.symbol} to your wallet to mint. Total due is ${total} ${currency.symbol}, including the platform fee.`);
   }
+}
+
+export async function readStockBalance(connection, buyer, currency) {
+  const account = paymentAccount(buyer, new PublicKey(currency.mint));
+  const info = await connection.getAccountInfo(account, "confirmed");
+  if (!info) return 0n;
+  if (!info.owner.equals(TOKEN_2022)) throw new Error("The buyer's stock token account has the wrong program.");
+  const token = (await connection.getTokenAccountBalance(account, "confirmed")).value;
+  if (token.decimals !== currency.decimals) throw new Error("The stock token's decimals differ from the collection.");
+  return BigInt(token.amount);
 }
 
 // Only ask the wallet to sign the registrar's expected stock-payment transaction.
